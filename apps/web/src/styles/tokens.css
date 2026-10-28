@@ -1,0 +1,79 @@
+/* "Ink" theme tokens. Source of truth: design/THEME.md */
+:root {
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --surface-2: #f3f3f3;
+  --hover: rgba(0, 0, 0, 0.045);
+  --border: #e9e9e9;
+  --border-strong: #d6d6d6;
+  --text: #0a0a0a;
+  --text-2: #5e5e5e;
+  --text-3: #9b9b9b;
+  --primary: #0a0a0a;
+  --primary-fg: #fafafa;
+  --ok: #16a34a;
+  --warn: #c27803;
+  --danger: #dc2626;
+  --overlay: rgba(250, 250, 250, 0.72);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.06);
+
+  /* The terminal is always an ink slab, like the mark */
+  --term-bg: #0b0b0b;
+  --term-fg: #e6e6e6;
+  --term-dim: #6f6f6f;
+  --term-border: #0b0b0b;
+  --term-line: #1c1c1c;
+
+  --radius: 10px;
+  --radius-sm: 6px;
+  --font: 'Geist Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'Geist Mono', ui-monospace, 'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0a0a0a;
+    --surface: #101010;
+    --surface-2: #161616;
+    --hover: rgba(255, 255, 255, 0.05);
+    --border: #1d1d1d;
+    --border-strong: #2a2a2a;
+    --text: #ededed;
+    --text-2: #a3a3a3;
+    --text-3: #636363;
+    --primary: #ededed;
+    --primary-fg: #0a0a0a;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --danger: #f87171;
+    --overlay: rgba(10, 10, 10, 0.72);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.5);
+    --term-bg: #0d0d0d;
+    --term-border: #1d1d1d;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #0a0a0a;
+  --surface: #101010;
+  --surface-2: #161616;
+  --hover: rgba(255, 255, 255, 0.05);
+  --border: #1d1d1d;
+  --border-strong: #2a2a2a;
+  --text: #ededed;
+  --text-2: #a3a3a3;
+  --text-3: #636363;
+  --primary: #ededed;
+  --primary-fg: #0a0a0a;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --danger: #f87171;
+  --overlay: rgba(10, 10, 10, 0.72);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.5);
+  --term-bg: #0d0d0d;
+  --term-border: #1d1d1d;
+  color-scheme: dark;
+}

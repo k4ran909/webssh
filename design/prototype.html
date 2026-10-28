@@ -1,0 +1,900 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WebSSH — UI prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ───────────── Tokens (light) ───────────── */
+:root {
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --surface-2: #f3f3f3;
+  --hover: rgba(0,0,0,.045);
+  --border: #e9e9e9;
+  --border-strong: #d6d6d6;
+  --text: #0a0a0a;
+  --text-2: #5e5e5e;
+  --text-3: #9b9b9b;
+  --primary: #0a0a0a;
+  --primary-fg: #fafafa;
+  --ok: #16a34a;
+  --warn: #c27803;
+  --danger: #dc2626;
+  --overlay: rgba(250,250,250,.72);
+  --shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06);
+
+  /* Terminal is always an ink slab, like the mark */
+  --term-bg: #0b0b0b;
+  --term-fg: #e6e6e6;
+  --term-dim: #6f6f6f;
+  --term-border: #0b0b0b;
+  --ansi-green: #8fd694;
+  --ansi-blue: #8ab4f8;
+  --ansi-yellow: #e6c47a;
+  --ansi-red: #f28b82;
+
+  --radius: 10px;
+  --radius-sm: 6px;
+  --font: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist Mono", ui-monospace, "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --ease: cubic-bezier(.2,.8,.2,1);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0a0a0a; --surface: #101010; --surface-2: #161616; --hover: rgba(255,255,255,.05);
+    --border: #1d1d1d; --border-strong: #2a2a2a;
+    --text: #ededed; --text-2: #a3a3a3; --text-3: #636363;
+    --primary: #ededed; --primary-fg: #0a0a0a;
+    --ok: #4ade80; --warn: #fbbf24; --danger: #f87171;
+    --overlay: rgba(10,10,10,.72);
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.5);
+    --term-bg: #0d0d0d; --term-border: #1d1d1d;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0a0a0a; --surface: #101010; --surface-2: #161616; --hover: rgba(255,255,255,.05);
+  --border: #1d1d1d; --border-strong: #2a2a2a;
+  --text: #ededed; --text-2: #a3a3a3; --text-3: #636363;
+  --primary: #ededed; --primary-fg: #0a0a0a;
+  --ok: #4ade80; --warn: #fbbf24; --danger: #f87171;
+  --overlay: rgba(10,10,10,.72);
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.5);
+  --term-bg: #0d0d0d; --term-border: #1d1d1d;
+  color-scheme: dark;
+}
+
+/* ───────────── Base ───────────── */
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.45 var(--font); -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+input { font: inherit; color: inherit; }
+::selection { background: var(--text); color: var(--bg); }
+.mono { font-family: var(--mono); }
+[hidden] { display: none !important; }
+svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+.kbd {
+  font: 500 11px/1 var(--mono); color: var(--text-3);
+  border: 1px solid var(--border-strong); border-radius: 4px; padding: 3px 5px;
+}
+.btn {
+  display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px;
+  border-radius: var(--radius-sm); font-weight: 500; font-size: 13px;
+  border: 1px solid var(--border-strong); background: var(--surface);
+  transition: background .15s, border-color .15s, transform .1s;
+}
+.btn:hover { background: var(--hover); }
+.btn:active { transform: scale(.98); }
+.btn.primary { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+.btn.primary:hover { opacity: .9; }
+.icon-btn {
+  width: 30px; height: 30px; display: grid; place-items: center; border-radius: var(--radius-sm);
+  color: var(--text-2); transition: background .15s, color .15s;
+}
+.icon-btn:hover, .icon-btn[aria-pressed="true"] { background: var(--hover); color: var(--text); }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); flex: none; }
+.dot.ok { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent); }
+.dot.warn { background: var(--warn); }
+.dot.busy { background: var(--text-2); animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+
+/* ───────────── Logo ───────────── */
+.mark { display: block; color: var(--text); overflow: visible; }
+.mark .a, .mark .b { transition: transform .6s var(--ease); }
+.mark.apart .a { transform: translate(36px, -36px); }
+.mark.apart .b { transform: translate(-36px, 36px); }
+
+/* ───────────── Unlock screen ───────────── */
+#unlock {
+  position: fixed; inset: 0; display: grid; place-items: center; background: var(--bg); z-index: 50;
+  padding: 24px; transition: opacity .4s var(--ease);
+}
+#unlock.leaving { opacity: 0; pointer-events: none; }
+.unlock-card { width: 100%; max-width: 320px; text-align: center; }
+.unlock-card .mark { width: 56px; height: 56px; margin: 0 auto 28px; }
+.unlock-card h1 { font-size: 20px; font-weight: 600; letter-spacing: -.02em; margin: 0 0 6px; }
+.unlock-card p { color: var(--text-2); margin: 0 0 24px; }
+.field {
+  display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 6px 0 14px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface);
+  transition: border-color .15s, box-shadow .15s;
+}
+.field:focus-within { border-color: var(--text); box-shadow: 0 0 0 4px var(--hover); }
+.field input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; font-family: var(--mono); letter-spacing: .1em; }
+.field .go { width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; background: var(--primary); color: var(--primary-fg); }
+.unlock-foot { margin-top: 20px; font-size: 12px; color: var(--text-3); }
+.shake { animation: shake .35s; }
+@keyframes shake { 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
+
+/* ───────────── App shell ───────────── */
+#app { display: grid; grid-template-columns: 236px 1fr; height: 100vh; height: 100dvh; padding-top: env(safe-area-inset-top, 0px); }
+
+aside {
+  display: flex; flex-direction: column; gap: 4px; padding: 14px 10px 12px;
+  border-right: 1px solid var(--border); background: var(--bg); min-height: 0;
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 14px; }
+.brand .mark { width: 20px; height: 20px; }
+.brand span { font-weight: 600; letter-spacing: -.02em; font-size: 15px; }
+.search {
+  display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 8px 0 10px; margin-bottom: 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-3); background: var(--surface);
+  transition: border-color .15s;
+}
+.search:hover { border-color: var(--border-strong); }
+.search span:first-of-type { flex: 1; text-align: left; font-size: 13px; }
+.nav-item {
+  display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border-radius: var(--radius-sm);
+  color: var(--text-2); font-weight: 500; font-size: 13px; width: 100%; text-align: left;
+  transition: background .15s, color .15s;
+}
+.nav-item:hover { background: var(--hover); color: var(--text); }
+.nav-item.on { background: var(--hover); color: var(--text); }
+.nav-item .count { margin-left: auto; font: 11px var(--mono); color: var(--text-3); }
+.section-label { font-size: 11px; font-weight: 500; color: var(--text-3); padding: 16px 10px 6px; text-transform: uppercase; letter-spacing: .06em; }
+.side-foot { margin-top: auto; display: flex; align-items: center; gap: 6px; padding: 10px 4px 0; border-top: 1px solid var(--border); }
+.vault-state { display: flex; align-items: center; gap: 8px; flex: 1; font-size: 12px; color: var(--text-2); padding-left: 6px; }
+
+main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+/* Tabs */
+.tabbar { display: flex; align-items: center; gap: 2px; height: 46px; padding: 0 10px; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; flex: none; }
+.tabbar::-webkit-scrollbar { display: none; }
+#menuBtn { display: none; margin-right: 4px; }
+.tab {
+  display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px 0 10px; border-radius: var(--radius-sm);
+  color: var(--text-2); font-size: 13px; font-weight: 500; white-space: nowrap; position: relative; flex: none;
+}
+.tab:hover { background: var(--hover); color: var(--text); }
+.tab.on { background: var(--surface); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
+.tab .x { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 4px; color: var(--text-3); opacity: 0; }
+.tab:hover .x, .tab.on .x { opacity: 1; }
+.tab .x:hover { background: var(--hover); color: var(--text); }
+.tab .x svg { width: 12px; height: 12px; }
+.tab .swatch { width: 3px; height: 14px; border-radius: 2px; }
+
+.content { flex: 1; min-height: 0; position: relative; }
+.view { position: absolute; inset: 0; overflow: auto; }
+
+/* Status bar */
+.statusbar {
+  display: flex; align-items: center; gap: 16px; height: 28px; padding: 0 14px; flex: none;
+  padding-bottom: env(safe-area-inset-bottom, 0px); box-sizing: content-box;
+  border-top: 1px solid var(--border); font: 11px var(--mono); color: var(--text-3);
+}
+.statusbar .sp { flex: 1; }
+.statusbar b { font-weight: 500; color: var(--text-2); }
+
+/* ───────────── Hosts view ───────────── */
+.page { padding: 28px 32px 48px; max-width: 1120px; }
+.page-head { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+.page-head h2 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -.025em; }
+.page-head p { margin: 4px 0 0; color: var(--text-2); font-size: 13px; }
+.page-head .spacer { flex: 1; }
+.chips { display: flex; gap: 6px; margin-bottom: 18px; flex-wrap: wrap; }
+.chip {
+  height: 28px; padding: 0 11px; border-radius: 999px; font-size: 12px; font-weight: 500; color: var(--text-2);
+  border: 1px solid var(--border); background: var(--surface); display: inline-flex; align-items: center; gap: 6px;
+}
+.chip:hover { border-color: var(--border-strong); color: var(--text); }
+.chip.on { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+.host {
+  position: relative; text-align: left; padding: 14px 14px 12px; border-radius: var(--radius);
+  background: var(--surface); border: 1px solid var(--border);
+  transition: border-color .15s, transform .15s var(--ease), box-shadow .15s;
+}
+.host:hover { border-color: var(--border-strong); transform: translateY(-1px); box-shadow: var(--shadow); }
+.host-top { display: flex; align-items: center; gap: 10px; }
+.os { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; background: var(--surface-2); color: var(--text-2); font: 600 11px var(--mono); }
+.host-name { font-weight: 600; font-size: 14px; letter-spacing: -.01em; }
+.host-addr { font: 12px var(--mono); color: var(--text-3); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.host-meta { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 12px; color: var(--text-3); }
+.tag { font: 500 11px var(--mono); color: var(--text-2); background: var(--surface-2); border-radius: 4px; padding: 2px 6px; }
+.host .go-arrow { position: absolute; top: 14px; right: 12px; color: var(--text-3); opacity: 0; transition: opacity .15s, transform .15s var(--ease); }
+.host:hover .go-arrow { opacity: 1; transform: translateX(2px); }
+.host.add { display: grid; place-items: center; min-height: 104px; border-style: dashed; color: var(--text-3); background: transparent; }
+.host.add:hover { color: var(--text); box-shadow: none; }
+
+/* Generic list (keychain, snippets, forwarding) */
+.list { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+.row { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border-top: 1px solid var(--border); }
+.row:first-child { border-top: 0; }
+.row:hover { background: var(--hover); }
+.row .main { flex: 1; min-width: 0; }
+.row .t { font-weight: 500; }
+.row .s { font: 12px var(--mono); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Settings */
+.set-group { margin-bottom: 28px; }
+.set-group h3 { font-size: 13px; font-weight: 600; margin: 0 0 10px; }
+.seg { display: inline-flex; padding: 3px; border-radius: 8px; background: var(--surface-2); gap: 2px; }
+.seg button { height: 28px; padding: 0 12px; border-radius: 6px; font-size: 13px; font-weight: 500; color: var(--text-2); }
+.seg button.on { background: var(--surface); color: var(--text); box-shadow: 0 0 0 1px var(--border), 0 1px 2px rgba(0,0,0,.06); }
+.swatches { display: flex; gap: 10px; flex-wrap: wrap; }
+.swatch-card { width: 150px; border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; text-align: left; background: var(--surface); }
+.swatch-card.on { border-color: var(--text); }
+.swatch-card .prev { height: 70px; padding: 10px; font: 11px/1.5 var(--mono); }
+.swatch-card .nm { padding: 8px 10px; font-size: 12px; font-weight: 500; border-top: 1px solid var(--border); }
+
+/* ───────────── Terminal view ───────────── */
+.term-wrap { position: absolute; inset: 0; display: flex; padding: 10px; gap: 10px; }
+.pane {
+  position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column;
+  background: var(--term-bg); border: 1px solid var(--term-border); border-radius: var(--radius);
+}
+/* Signature: the mark's two corner pieces frame the focused pane */
+.pane::before, .pane::after {
+  content: ""; position: absolute; width: 14px; height: 14px; background: var(--text);
+  -webkit-mask: var(--piece) no-repeat center / contain; mask: var(--piece) no-repeat center / contain;
+  opacity: 0; transition: opacity .25s, transform .35s var(--ease);
+}
+.pane::after { left: -7px; bottom: -7px; transform: translate(-4px, 4px); }
+.pane::before { right: -7px; top: -7px; transform: rotate(180deg) translate(-4px, 4px); }
+.pane.focus::before { opacity: 1; transform: rotate(180deg); }
+.pane.focus::after { opacity: 1; transform: none; }
+:root { --piece: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='156 0 144 144'%3E%3Cpath d='M156 0h16c0 92 32 128 128 128v16H156z'/%3E%3C/svg%3E"); }
+
+.pane-bar { display: flex; align-items: center; gap: 4px; height: 38px; padding: 0 6px 0 14px; border-bottom: 1px solid #1c1c1c; color: #8a8a8a; flex: none; }
+.pane-bar .title { flex: 1; font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pane-bar .icon-btn { color: #7a7a7a; }
+.pane-bar .icon-btn:hover, .pane-bar .icon-btn[aria-pressed="true"] { background: #1a1a1a; color: #e6e6e6; }
+.term {
+  flex: 1; overflow-y: auto; padding: 14px 16px; outline: 0; cursor: text;
+  font: 13px/1.6 var(--mono); color: var(--term-fg); white-space: pre-wrap; word-break: break-all;
+  scrollbar-width: thin; scrollbar-color: #2a2a2a transparent;
+}
+.term .d { color: var(--term-dim); }
+.term .g { color: var(--ansi-green); }
+.term .b { color: var(--ansi-blue); }
+.term .y { color: var(--ansi-yellow); }
+.term .r { color: var(--ansi-red); }
+.term .w { color: #fff; font-weight: 500; }
+.cursor { display: inline-block; width: .6em; height: 1.15em; vertical-align: text-bottom; background: var(--term-fg); animation: blink 1.1s steps(1) infinite; }
+.ti { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; resize: none; pointer-events: none; }
+.pane:not(:focus-within) .cursor { background: none; box-shadow: inset 0 0 0 1px var(--term-dim); animation: none; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* Host key prompt (TOFU) */
+.hk {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(420px, calc(100% - 32px));
+  background: #121212; border: 1px solid #262626; border-radius: 12px; padding: 20px; color: #e6e6e6;
+  box-shadow: 0 20px 60px rgba(0,0,0,.6); animation: pop .25s var(--ease);
+}
+@keyframes pop { from { opacity: 0; transform: translate(-50%, -46%); } }
+.hk h4 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+.hk p { margin: 0 0 14px; color: #9a9a9a; font-size: 13px; }
+.hk .fp { font: 12px/1.6 var(--mono); background: #0b0b0b; border: 1px solid #222; border-radius: 8px; padding: 10px 12px; word-break: break-all; color: #e6c47a; }
+.hk .acts { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.hk .btn { background: #161616; border-color: #2a2a2a; color: #e6e6e6; }
+.hk .btn.primary { background: #ededed; color: #0a0a0a; border-color: #ededed; }
+
+/* SFTP side panel */
+.sftp {
+  width: 320px; flex: none; display: flex; flex-direction: column; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; animation: slide .3s var(--ease);
+}
+@keyframes slide { from { opacity: 0; transform: translateX(12px); } }
+.sftp-head { display: flex; align-items: center; gap: 6px; height: 38px; padding: 0 6px 0 14px; border-bottom: 1px solid var(--border); }
+.crumbs { flex: 1; font: 12px var(--mono); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crumbs b { color: var(--text); font-weight: 500; }
+.files { flex: 1; overflow: auto; padding: 4px; }
+.file { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border-radius: 6px; font-size: 13px; width: 100%; text-align: left; }
+.file:hover { background: var(--hover); }
+.file .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file .sz { font: 11px var(--mono); color: var(--text-3); }
+.file svg { color: var(--text-3); }
+.drop { margin: 6px; padding: 16px; border: 1px dashed var(--border-strong); border-radius: 8px; text-align: center; font-size: 12px; color: var(--text-3); }
+
+/* Snippets popover */
+.pop {
+  position: absolute; right: 8px; top: 42px; width: 280px; z-index: 5; padding: 6px;
+  background: #121212; border: 1px solid #262626; border-radius: 10px; box-shadow: 0 16px 40px rgba(0,0,0,.5);
+  animation: fade .18s var(--ease);
+}
+@keyframes fade { from { opacity: 0; transform: translateY(-4px); } }
+.pop button { display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: 6px; color: #e6e6e6; }
+.pop button:hover { background: #1c1c1c; }
+.pop .c { display: block; font: 11px var(--mono); color: #7a7a7a; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ───────────── Command palette ───────────── */
+#palette { position: fixed; inset: 0; z-index: 40; background: var(--overlay); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); display: flex; justify-content: center; padding: 14vh 16px 16px; animation: fade .15s; }
+.pal { width: 100%; max-width: 560px; align-self: flex-start; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+.pal-in { display: flex; align-items: center; gap: 10px; padding: 0 16px; height: 52px; border-bottom: 1px solid var(--border); color: var(--text-3); }
+.pal-in input { flex: 1; border: 0; outline: 0; background: none; font-size: 15px; color: var(--text); }
+.pal-list { max-height: 50vh; overflow: auto; padding: 6px; }
+.pal-sec { font-size: 11px; color: var(--text-3); padding: 10px 10px 4px; text-transform: uppercase; letter-spacing: .06em; }
+.pal-item { display: flex; align-items: center; gap: 10px; width: 100%; height: 38px; padding: 0 10px; border-radius: 8px; text-align: left; }
+.pal-item.sel { background: var(--hover); }
+.pal-item .s { margin-left: auto; font: 11px var(--mono); color: var(--text-3); }
+.pal-foot { display: flex; gap: 14px; padding: 9px 14px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-3); }
+
+/* Toast */
+#toast { position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%); z-index: 60; background: var(--primary); color: var(--primary-fg); padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; box-shadow: var(--shadow); animation: fade .2s; }
+
+/* ───────────── Mobile ───────────── */
+.scrim { display: none; }
+@media (max-width: 760px) {
+  #app { grid-template-columns: 1fr; }
+  aside { position: fixed; z-index: 30; inset: 0 auto 0 0; width: 260px; transform: translateX(-100%); transition: transform .3s var(--ease); background: var(--surface); padding-top: calc(14px + env(safe-area-inset-top, 0px)); }
+  body.nav-open aside { transform: none; box-shadow: var(--shadow); }
+  body.nav-open .scrim { display: block; position: fixed; inset: 0; z-index: 29; background: var(--overlay); }
+  #menuBtn { display: grid; }
+  .page { padding: 20px 16px 40px; }
+  .term-wrap { padding: 6px; }
+  .sftp { position: absolute; inset: 6px; width: auto; z-index: 4; }
+  .statusbar .hide-sm { display: none; }
+  .pane.focus::before, .pane.focus::after { opacity: 0; }
+}
+</style>
+</head>
+<body>
+
+<!-- Unlock -->
+<section id="unlock">
+  <form class="unlock-card" id="unlockForm" autocomplete="off">
+    <svg class="mark apart" id="unlockMark" viewBox="0 0 300 300" fill="currentColor" aria-hidden="true">
+      <g class="a"><path d="M156 0h16c0 92 32 128 128 128v16H156z"/></g>
+      <g class="b"><path d="M156 0h16c0 92 32 128 128 128v16H156z" transform="rotate(180 150 150)"/></g>
+    </svg>
+    <h1>Unlock your vault</h1>
+    <p>Hosts and keys are decrypted on this device only.</p>
+    <label class="field">
+      <input id="pw" type="password" placeholder="Master password" aria-label="Master password" autofocus>
+      <button class="go" type="submit" aria-label="Unlock">
+        <svg class="i" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+    </label>
+    <div class="unlock-foot">Prototype — type anything and press Enter</div>
+  </form>
+</section>
+
+<!-- App -->
+<div id="app">
+  <aside id="side">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 300 300" fill="currentColor" aria-hidden="true">
+        <path d="M156 0h16c0 92 32 128 128 128v16H156z"/>
+        <path d="M156 0h16c0 92 32 128 128 128v16H156z" transform="rotate(180 150 150)"/>
+      </svg>
+      <span>webssh</span>
+    </div>
+    <button class="search" id="openPal">
+      <svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+      <span>Search or connect</span><span class="kbd">Ctrl K</span>
+    </button>
+    <nav id="nav"></nav>
+    <div class="section-label">Groups</div>
+    <div id="groups"></div>
+    <div class="side-foot">
+      <div class="vault-state"><span class="dot ok"></span>Vault unlocked</div>
+      <button class="icon-btn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme"></button>
+      <button class="icon-btn" id="lockBtn" title="Lock vault" aria-label="Lock vault">
+        <svg class="i" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+      </button>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+
+  <main>
+    <div class="tabbar" id="tabbar"></div>
+    <div class="content" id="content"></div>
+    <div class="statusbar" id="status"></div>
+  </main>
+</div>
+
+<div id="palette" hidden>
+  <div class="pal" role="dialog" aria-label="Command palette">
+    <div class="pal-in">
+      <svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+      <input id="palInput" placeholder="Connect to a host or run an action…" autocomplete="off">
+      <span class="kbd">Esc</span>
+    </div>
+    <div class="pal-list" id="palList"></div>
+    <div class="pal-foot"><span>↑↓ navigate</span><span>↵ open</span><span>Esc close</span></div>
+  </div>
+</div>
+<div id="toast" hidden></div>
+
+<script>
+/* ───────────── Data ───────────── */
+const HOSTS = [
+  { id: 'prod-api',   name: 'prod-api',    user: 'root',     host: '142.93.18.204',        port: 22, group: 'production', os: 'UB', color: '#f87171', last: '2h ago',  known: true },
+  { id: 'prod-db',    name: 'prod-db',     user: 'postgres', host: '10.0.1.12',            port: 22, group: 'production', os: 'DB', color: '#f87171', last: 'yesterday', known: true, jump: 'bastion' },
+  { id: 'bastion',    name: 'bastion',     user: 'ubuntu',   host: 'bastion.example.com',  port: 22, group: 'production', os: 'UB', color: '#f87171', last: '3d ago',  known: true },
+  { id: 'staging-web',name: 'staging-web', user: 'deploy',   host: 'staging.example.com',  port: 2222, group: 'staging',  os: 'DE', color: '#fbbf24', last: 'never',   known: false },
+  { id: 'nas',        name: 'homelab-nas', user: 'admin',    host: '192.168.1.20',         port: 22, group: 'homelab',    os: 'TN', color: '#8ab4f8', last: '5d ago',  known: true },
+  { id: 'pihole',     name: 'pi-hole',     user: 'pi',       host: '192.168.1.53',         port: 22, group: 'homelab',    os: 'PI', color: '#8ab4f8', last: '1w ago',  known: true },
+];
+const GROUPS = [['production', '#f87171'], ['staging', '#fbbf24'], ['homelab', '#8ab4f8']];
+const SNIPPETS = [
+  { name: 'Disk usage',        cmd: 'df -h' },
+  { name: 'Running containers', cmd: 'docker ps' },
+  { name: 'Who am I',          cmd: 'whoami' },
+  { name: 'Uptime',            cmd: 'uptime' },
+];
+const KEYS = [
+  { name: 'laptop-ed25519', type: 'ED25519', fp: 'SHA256:7Kq2+Vb1yLwQe0rT9cF3mZ8pXo4nHs6dGj5uA1iRkE', used: 4 },
+  { name: 'deploy-ci',      type: 'ED25519', fp: 'SHA256:pL9xW2sQ8vN4kD7tB1yH6cJ3mR5gF0aZ2eU8oI4wTq', used: 1 },
+  { name: 'legacy-rsa',     type: 'RSA 4096', fp: 'SHA256:Z0fT3qY8mK1nV6bR4wX9sL2cH7pD5gJ0aE3uO8iNtM', used: 1 },
+];
+const FORWARDS = [
+  { name: 'Grafana',  rule: 'prod-api  ·  localhost:3000  →  https://fwd-3kq9.webssh.app' },
+  { name: 'Postgres', rule: 'prod-db  ·  remote 5432  ←  bastion' },
+];
+
+const ICON = {
+  hosts: '<rect x="3.5" y="4.5" width="17" height="6" rx="1.5"/><rect x="3.5" y="13.5" width="17" height="6" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/>',
+  keys: '<circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16 7l2.5 2.5M14 9l2 2"/>',
+  snippets: '<path d="m8 9-3 3 3 3M16 9l3 3-3 3M13.5 6l-3 12"/>',
+  forward: '<path d="M4 12h14M14 7l5 5-5 5"/><path d="M4 7v10" />',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/>',
+  x: '<path d="M6 6l12 12M18 6 6 18"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  arrow: '<path d="M7 17 17 7M9 7h8v8"/>',
+  folder: '<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>',
+  file: '<path d="M7 3.5h7l4 4V19a1.5 1.5 0 0 1-1.5 1.5h-9.5A1.5 1.5 0 0 1 5.5 19V5A1.5 1.5 0 0 1 7 3.5z"/><path d="M14 3.5V8h4"/>',
+  split: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M12 4.5v15"/>',
+  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
+  moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+  bolt: '<path d="M13 3 5 13.5h6L10 21l8-10.5h-6z"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+};
+const ic = (n, s = 16) => `<svg class="i" viewBox="0 0 24 24" style="width:${s}px;height:${s}px">${ICON[n]}</svg>`;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const $ = s => document.querySelector(s);
+
+/* ───────────── State ───────────── */
+const state = { view: 'hosts', filter: 'all', tabs: [], active: 'home', termTheme: 'ink' };
+let tabSeq = 0;
+
+/* ───────────── Theme ───────────── */
+function getTheme() {
+  const t = document.documentElement.dataset.theme;
+  if (t) return t;
+  return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+function setTheme(t) {
+  if (t === 'system') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+  try { localStorage.setItem('webssh-theme', t); } catch (e) {}
+  $('#themeBtn').innerHTML = ic(getTheme() === 'dark' ? 'sun' : 'moon');
+  if (state.view === 'settings' && state.active === 'home') render();
+}
+try { const t = localStorage.getItem('webssh-theme'); if (t && t !== 'system') document.documentElement.dataset.theme = t; } catch (e) {}
+
+/* ───────────── Unlock ───────────── */
+$('#unlockForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const pw = $('#pw');
+  if (!pw.value) { const f = $('.field'); f.classList.remove('shake'); void f.offsetWidth; f.classList.add('shake'); return; }
+  $('#unlockMark').classList.remove('apart');
+  setTimeout(() => { $('#unlock').classList.add('leaving'); }, 450);
+  setTimeout(() => { $('#unlock').hidden = true; pw.value = ''; }, 850);
+});
+function lock() {
+  $('#unlock').hidden = false;
+  $('#unlock').classList.remove('leaving');
+  $('#unlockMark').classList.add('apart');
+  setTimeout(() => $('#pw').focus(), 50);
+}
+$('#lockBtn').onclick = lock;
+
+/* ───────────── Sidebar ───────────── */
+function renderSide() {
+  const items = [['hosts', 'Hosts', HOSTS.length], ['keys', 'Keychain', KEYS.length], ['snippets', 'Snippets', SNIPPETS.length], ['forward', 'Port forwarding', FORWARDS.length], ['settings', 'Settings', '']];
+  $('#nav').innerHTML = items.map(([id, label, n]) =>
+    `<button class="nav-item ${state.active === 'home' && state.view === id ? 'on' : ''}" data-nav="${id}">${ic(id)}${label}<span class="count">${n}</span></button>`).join('');
+  $('#groups').innerHTML = GROUPS.map(([g, c]) =>
+    `<button class="nav-item ${state.active === 'home' && state.view === 'hosts' && state.filter === g ? 'on' : ''}" data-group="${g}"><span class="dot" style="background:${c}"></span>${g}<span class="count">${HOSTS.filter(h => h.group === g).length}</span></button>`).join('');
+}
+$('#side').addEventListener('click', e => {
+  const n = e.target.closest('[data-nav]'), g = e.target.closest('[data-group]');
+  if (n) { state.view = n.dataset.nav; state.filter = 'all'; activate('home'); }
+  if (g) { state.view = 'hosts'; state.filter = g.dataset.group; activate('home'); }
+  if (n || g) document.body.classList.remove('nav-open');
+});
+$('#scrim').onclick = () => document.body.classList.remove('nav-open');
+$('#themeBtn').onclick = () => setTheme(getTheme() === 'dark' ? 'light' : 'dark');
+$('#openPal').onclick = openPalette;
+
+/* ───────────── Tabs ───────────── */
+function renderTabs() {
+  const home = `<button class="tab ${state.active === 'home' ? 'on' : ''}" data-tab="home">${ic(state.view === 'settings' ? 'settings' : 'hosts', 14)}${{ hosts: 'Hosts', keys: 'Keychain', snippets: 'Snippets', forward: 'Forwarding', settings: 'Settings' }[state.view]}</button>`;
+  $('#tabbar').innerHTML = `<button class="icon-btn" id="menuBtn" aria-label="Menu">${ic('menu')}</button>` + home +
+    state.tabs.map(t => `<button class="tab ${state.active === t.id ? 'on' : ''}" data-tab="${t.id}">
+      <span class="dot ${t.status === 'ready' ? 'ok' : t.status === 'closed' ? '' : 'busy'}"></span>${esc(t.host.name)}
+      <span class="x" data-close="${t.id}" aria-label="Close tab">${ic('x')}</span></button>`).join('') +
+    `<button class="icon-btn" id="newTab" title="New connection" aria-label="New connection">${ic('plus')}</button>`;
+}
+$('#tabbar').addEventListener('click', e => {
+  const c = e.target.closest('[data-close]');
+  if (c) { closeTab(c.dataset.close); e.stopPropagation(); return; }
+  const t = e.target.closest('[data-tab]');
+  if (t) activate(t.dataset.tab);
+  if (e.target.closest('#newTab')) openPalette();
+  if (e.target.closest('#menuBtn')) document.body.classList.toggle('nav-open');
+});
+function activate(id) {
+  state.active = id;
+  render();
+  const t = state.tabs.find(t => t.id === id);
+  if (t) setTimeout(() => t.input.focus(), 0);
+}
+function closeTab(id) {
+  const i = state.tabs.findIndex(t => t.id === id);
+  if (i < 0) return;
+  state.tabs[i].el.remove();
+  state.tabs.splice(i, 1);
+  if (state.active === id) state.active = state.tabs[i]?.id || state.tabs[i - 1]?.id || 'home';
+  activate(state.active);
+}
+
+/* ───────────── Views ───────────── */
+function render() {
+  renderSide(); renderTabs(); renderStatus();
+  const content = $('#content');
+  let home = $('#homeView');
+  if (!home) { home = document.createElement('div'); home.id = 'homeView'; home.className = 'view'; content.prepend(home); }
+  home.hidden = state.active !== 'home';
+  state.tabs.forEach(t => {
+    t.el.hidden = t.id !== state.active;
+    t.el.querySelector('.pane').classList.toggle('focus', t.id === state.active);
+  });
+  if (state.active === 'home') home.innerHTML = VIEWS[state.view]();
+}
+
+const VIEWS = {
+  hosts() {
+    const list = HOSTS.filter(h => state.filter === 'all' || h.group === state.filter);
+    return `<div class="page">
+      <div class="page-head"><div><h2>Hosts</h2><p>${HOSTS.length} hosts across ${GROUPS.length} groups · synced 2 min ago</p></div>
+        <span class="spacer"></span><button class="btn primary" data-act="new">${ic('plus', 14)}New host</button></div>
+      <div class="chips">${['all', ...GROUPS.map(g => g[0])].map(g => `<button class="chip ${state.filter === g ? 'on' : ''}" data-filter="${g}">${g === 'all' ? 'All' : g}</button>`).join('')}</div>
+      <div class="grid">${list.map(h => `
+        <button class="host" data-connect="${h.id}">
+          <div class="host-top"><div class="os">${h.os}</div>
+            <div style="min-width:0"><div class="host-name">${esc(h.name)}</div><div class="host-addr">${esc(h.user)}@${esc(h.host)}${h.port !== 22 ? ':' + h.port : ''}</div></div></div>
+          <div class="host-meta"><span class="dot" style="background:${h.color}"></span><span class="tag">${h.group}</span>${h.jump ? `<span class="tag">via ${h.jump}</span>` : ''}<span style="margin-left:auto">${h.last}</span></div>
+          <span class="go-arrow">${ic('arrow', 14)}</span>
+        </button>`).join('')}
+        <button class="host add" data-act="new">${ic('plus')}</button>
+      </div></div>`;
+  },
+  keys() {
+    return page('Keychain', 'Private keys stay encrypted in your vault.', 'Generate key',
+      KEYS.map(k => row(ic('keys'), k.name, k.fp, `<span class="tag">${k.type}</span>`, `${k.used} host${k.used > 1 ? 's' : ''}`)));
+  },
+  snippets() {
+    return page('Snippets', 'Reusable commands — run them from any terminal tab.', 'New snippet',
+      SNIPPETS.map(s => row(ic('snippets'), s.name, s.cmd, '', '')));
+  },
+  forward() {
+    return page('Port forwarding', 'HTTP services get a private preview URL. Raw TCP needs the companion CLI.', 'New rule',
+      FORWARDS.map(f => row(ic('forward'), f.name, f.rule, '<span class="dot ok"></span>', 'active')));
+  },
+  settings() {
+    const cur = document.documentElement.dataset.theme || 'system';
+    const themes = [
+      ['ink', 'Ink', '#0b0b0b', '#e6e6e6', '#8fd694'],
+      ['paper', 'Paper', '#fbfbf8', '#1a1a1a', '#2f7d4a'],
+      ['dusk', 'Dusk', '#14131a', '#dcd8f0', '#b7a6ff'],
+    ];
+    return `<div class="page" style="max-width:720px">
+      <div class="page-head"><div><h2>Settings</h2><p>Appearance and terminal.</p></div></div>
+      <div class="set-group"><h3>Interface</h3>
+        <div class="seg">${['system', 'light', 'dark'].map(t => `<button class="${cur === t ? 'on' : ''}" data-theme-set="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div>
+      <div class="set-group"><h3>Terminal theme</h3><div class="swatches">${themes.map(([id, nm, bg, fg, ac]) => `
+        <button class="swatch-card ${state.termTheme === id ? 'on' : ''}" data-term-theme="${id}">
+          <div class="prev" style="background:${bg};color:${fg}"><span style="color:${ac}">root@prod</span>:~$ ls<br>app&nbsp; logs&nbsp; .env</div>
+          <div class="nm">${nm}</div></button>`).join('')}</div></div>
+      <div class="set-group"><h3>Font</h3>
+        <div class="list"><div class="row"><div class="main"><div class="t">Geist Mono · 13px</div><div class="s">Ligatures off · cursor block · scrollback 10,000</div></div></div></div></div>
+    </div>`;
+  },
+};
+function page(title, sub, cta, rows) {
+  return `<div class="page" style="max-width:880px"><div class="page-head"><div><h2>${title}</h2><p>${sub}</p></div>
+    <span class="spacer"></span><button class="btn primary" data-act="new">${ic('plus', 14)}${cta}</button></div>
+    <div class="list">${rows.join('')}</div></div>`;
+}
+function row(icon, t, s, badge, meta) {
+  return `<div class="row"><span style="color:var(--text-3)">${icon}</span><div class="main"><div class="t">${esc(t)}</div><div class="s">${esc(s)}</div></div>${badge}<span style="font-size:12px;color:var(--text-3)">${meta}</span></div>`;
+}
+
+$('#content').addEventListener('click', e => {
+  const f = e.target.closest('[data-filter]'); if (f) { state.filter = f.dataset.filter; render(); }
+  const c = e.target.closest('[data-connect]'); if (c) connect(c.dataset.connect);
+  const a = e.target.closest('[data-act="new"]'); if (a) toast('Editor coming in the real app');
+  const ts = e.target.closest('[data-theme-set]'); if (ts) setTheme(ts.dataset.themeSet);
+  const tt = e.target.closest('[data-term-theme]'); if (tt) { state.termTheme = tt.dataset.termTheme; applyTermTheme(); render(); }
+});
+
+const TERM_THEMES = {
+  ink:   { '--term-bg': null, '--term-fg': null, '--term-dim': null, '--ansi-green': null, '--term-border': null },
+  paper: { '--term-bg': '#fbfbf8', '--term-fg': '#1a1a1a', '--term-dim': '#8a8a85', '--ansi-green': '#2f7d4a', '--term-border': '#e4e4df' },
+  dusk:  { '--term-bg': '#14131a', '--term-fg': '#dcd8f0', '--term-dim': '#6d6889', '--ansi-green': '#b7a6ff', '--term-border': '#24222e' },
+};
+function applyTermTheme() {
+  Object.entries(TERM_THEMES[state.termTheme]).forEach(([k, v]) =>
+    v ? document.documentElement.style.setProperty(k, v) : document.documentElement.style.removeProperty(k));
+}
+
+/* ───────────── Status bar ───────────── */
+function renderStatus() {
+  const t = state.tabs.find(t => t.id === state.active);
+  $('#status').innerHTML = t
+    ? `<span><span class="dot ${t.status === 'ready' ? 'ok' : t.status === 'closed' ? '' : 'busy'}" style="display:inline-block;margin-right:6px"></span><b>${t.status === 'ready' ? 'Connected' : t.status === 'closed' ? 'Closed' : 'Connecting'}</b></span>
+       <span>${esc(t.host.user)}@${esc(t.host.host)}</span><span class="hide-sm">ed25519</span><span class="sp"></span>
+       <span class="hide-sm">24 ms</span><span class="hide-sm">120×32</span><span>UTF-8</span>`
+    : `<span><b>${HOSTS.length}</b> hosts</span><span class="hide-sm"><b>${state.tabs.length}</b> open sessions</span><span class="sp"></span><span class="hide-sm">AES-256-GCM vault</span><span>gateway · fra1</span>`;
+}
+
+/* ───────────── Terminal ───────────── */
+function connect(hostId) {
+  const host = HOSTS.find(h => h.id === hostId);
+  const id = 't' + (++tabSeq);
+  const el = document.createElement('div');
+  el.className = 'view';
+  el.innerHTML = `<div class="term-wrap">
+    <div class="pane">
+      <div class="pane-bar"><span class="title">${esc(host.user)}@${esc(host.name)}</span>
+        <button class="icon-btn" data-snip title="Snippets" aria-label="Snippets">${ic('bolt')}</button>
+        <button class="icon-btn" data-sftp title="SFTP" aria-label="SFTP" aria-pressed="false">${ic('folder')}</button>
+        <button class="icon-btn" data-split title="Split pane" aria-label="Split pane">${ic('split')}</button>
+      </div>
+      <div class="term"></div>
+      <textarea class="ti" aria-label="Terminal input" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
+    </div></div>`;
+  $('#content').appendChild(el);
+  const tab = { id, host, el, term: el.querySelector('.term'), input: el.querySelector('.ti'), status: 'connecting', buf: '', busy: true, cwd: '~' };
+  state.tabs.push(tab);
+  wireTerm(tab);
+  activate(id);
+  closePalette();
+
+  out(tab, `<span class="d">Connecting to ${esc(host.host)}:${host.port}${host.jump ? ' via ' + host.jump : ''} …</span>`);
+  setTimeout(() => {
+    if (host.known) return handshake(tab);
+    const hk = document.createElement('div');
+    hk.className = 'hk';
+    hk.innerHTML = `<h4>New host key</h4><p>First connection to <b style="color:#e6e6e6">${esc(host.host)}</b>. Verify this fingerprint with the server before trusting it.</p>
+      <div class="fp">ED25519 · SHA256:Qm4t+Yk2Wd9Lx0Hn7Pa3Vs8Fc1Jr6Bz5Eu2Ny9Ti0Go</div>
+      <div class="acts"><button class="btn" data-hk="no">Cancel</button><button class="btn primary" data-hk="yes">Trust & connect</button></div>`;
+    el.querySelector('.pane').appendChild(hk);
+    hk.addEventListener('click', e => {
+      const b = e.target.closest('[data-hk]'); if (!b) return;
+      hk.remove();
+      if (b.dataset.hk === 'yes') { host.known = true; out(tab, '<span class="y">!</span> <span class="d">Host key saved to vault known_hosts</span>'); handshake(tab); }
+      else { out(tab, '<span class="r">✕</span> <span class="d">Connection cancelled</span>'); tab.status = 'closed'; render(); }
+    });
+  }, 500);
+}
+
+function handshake(tab) {
+  const h = tab.host;
+  const lines = [
+    `<span class="g">✓</span> <span class="d">Host key verified · ED25519</span>`,
+    `<span class="g">✓</span> <span class="d">Authenticated as ${esc(h.user)} (publickey)</span>`,
+    ``,
+    `Welcome to Ubuntu 24.04.1 LTS (GNU/Linux 6.8.0-45-generic x86_64)`,
+    ``,
+    `  System load:  0.08            Processes:       112`,
+    `  Usage of /:   41.2% of 48GB   Users logged in: 0`,
+    `  Memory usage: 23%             IPv4 address:    ${esc(h.host)}`,
+    ``,
+    `<span class="d">Last login: Tue Oct 28 09:14:02 2026 from 49.36.12.7</span>`,
+  ];
+  lines.forEach((l, i) => setTimeout(() => {
+    out(tab, l);
+    if (i === lines.length - 1) { tab.status = 'ready'; tab.busy = false; prompt(tab); render(); }
+  }, 260 + i * 70));
+}
+
+function out(tab, html) {
+  const line = document.createElement('div');
+  line.innerHTML = html || '&nbsp;';
+  const live = tab.term.querySelector('.live');
+  if (live) live.before(line); else tab.term.appendChild(line);
+  tab.term.scrollTop = tab.term.scrollHeight;
+}
+function promptHTML(tab) {
+  const u = tab.host.user, root = u === 'root';
+  return `<span class="g">${esc(u)}@${esc(tab.host.name)}</span>:<span class="b">${tab.cwd}</span>${root ? '#' : '$'} `;
+}
+function prompt(tab) {
+  tab.term.querySelector('.live')?.remove();
+  const live = document.createElement('div');
+  live.className = 'live';
+  tab.term.appendChild(live);
+  drawLive(tab);
+}
+function drawLive(tab) {
+  const live = tab.term.querySelector('.live');
+  if (live) live.innerHTML = promptHTML(tab) + esc(tab.buf) + '<span class="cursor"></span>';
+  tab.term.scrollTop = tab.term.scrollHeight;
+}
+
+const FS = {
+  '~': [['app', 'd'], ['logs', 'd'], ['docker-compose.yml', '1.2K'], ['.env', '412'], ['deploy.sh', '880']],
+};
+function run(tab, cmd) {
+  const live = tab.term.querySelector('.live');
+  live.classList.remove('live');
+  live.innerHTML = promptHTML(tab) + esc(cmd);
+  const c = cmd.trim(), [bin] = c.split(/\s+/);
+  const R = {
+    '': [],
+    ls: [FS['~'].map(([n, t]) => t === 'd' ? `<span class="b">${n}</span>` : n).join('  ')],
+    whoami: [esc(tab.host.user)],
+    uptime: [' 14:22:07 up 41 days,  3:12,  1 user,  load average: 0.08, 0.05, 0.01'],
+    pwd: [tab.host.user === 'root' ? '/root' : '/home/' + esc(tab.host.user)],
+    'df': ['Filesystem      Size  Used Avail Use% Mounted on', '/dev/vda1        48G   20G   28G  42% /', 'tmpfs           2.0G     0  2.0G   0% /dev/shm'],
+    docker: ['CONTAINER ID   IMAGE            STATUS         PORTS                    NAMES',
+             '3f2a9c1d7e44   api:1.8.2        Up 6 days      0.0.0.0:8080->8080/tcp   api',
+             'a91b0e5c2f10   postgres:17      Up 6 days      5432/tcp                 db',
+             '7cd4e8f19a3b   caddy:2          Up 6 days      0.0.0.0:443->443/tcp     proxy'],
+    help: ['<span class="d">prototype commands: ls, pwd, whoami, uptime, df -h, docker ps, clear, exit</span>'],
+  };
+  if (bin === 'clear') { tab.term.innerHTML = ''; return prompt(tab); }
+  if (bin === 'exit') {
+    out(tab, 'logout'); out(tab, `<span class="d">Connection to ${esc(tab.host.host)} closed.</span>`);
+    tab.status = 'closed'; tab.busy = true; render(); return;
+  }
+  const lines = R[bin] || [`-bash: ${esc(bin)}: command not found`];
+  lines.forEach(l => out(tab, l));
+  prompt(tab);
+}
+
+// Keys arrive through a hidden textarea (like xterm.js) so IME, paste and mobile keyboards work
+function wireTerm(tab) {
+  const t = tab.term, inp = tab.input;
+  inp.addEventListener('keydown', e => {
+    if (e.ctrlKey && e.key.toLowerCase() === 'k') return;
+    if (tab.busy) { if (e.key.length === 1 || e.key === 'Enter') e.preventDefault(); return; }
+    if (e.key === 'Enter') { const c = tab.buf; tab.buf = ''; run(tab, c); }
+    else if (e.key === 'Backspace') tab.buf = tab.buf.slice(0, -1);
+    else if (e.ctrlKey && e.key.toLowerCase() === 'l') { t.innerHTML = ''; prompt(tab); }
+    else if (e.ctrlKey && e.key.toLowerCase() === 'c') {
+      const live = t.querySelector('.live');
+      live.classList.remove('live');
+      live.innerHTML = promptHTML(tab) + esc(tab.buf) + '^C';
+      tab.buf = '';
+      prompt(tab);
+    }
+    else return;
+    e.preventDefault();
+    drawLive(tab);
+  });
+  inp.addEventListener('input', () => {
+    if (!tab.busy) tab.buf += inp.value.replace(/\r?\n/g, ' ');
+    inp.value = '';
+    drawLive(tab);
+  });
+
+  tab.el.addEventListener('click', e => {
+    if (e.target.closest('[data-sftp]')) return toggleSftp(tab, e.target.closest('[data-sftp]'));
+    if (e.target.closest('[data-snip]')) return toggleSnips(tab);
+    if (e.target.closest('[data-split]')) return toast('Split panes + broadcast input: Phase 3');
+    const s = e.target.closest('[data-run]');
+    if (s) { tab.el.querySelector('.pop')?.remove(); if (!tab.busy) { run(tab, s.dataset.run); inp.focus(); } return; }
+    if (!e.target.closest('.pop')) tab.el.querySelector('.pop')?.remove();
+    if (e.target.closest('.term') && !getSelection().toString()) inp.focus();
+  });
+}
+
+function toggleSnips(tab) {
+  const ex = tab.el.querySelector('.pop');
+  if (ex) return ex.remove();
+  const p = document.createElement('div');
+  p.className = 'pop';
+  p.innerHTML = SNIPPETS.map(s => `<button data-run="${esc(s.cmd)}">${esc(s.name)}<span class="c">${esc(s.cmd)}</span></button>`).join('');
+  tab.el.querySelector('.pane').appendChild(p);
+}
+
+function toggleSftp(tab, btn) {
+  const ex = tab.el.querySelector('.sftp');
+  btn.setAttribute('aria-pressed', ex ? 'false' : 'true');
+  if (ex) return ex.remove();
+  const s = document.createElement('div');
+  s.className = 'sftp';
+  const home = tab.host.user === 'root' ? '/root' : '/home/' + tab.host.user;
+  s.innerHTML = `<div class="sftp-head"><div class="crumbs">${esc(home)}/<b></b></div>
+      <button class="icon-btn" aria-label="Upload" title="Upload">${ic('plus')}</button>
+      <button class="icon-btn" data-sftp-close aria-label="Close SFTP" title="Close">${ic('x')}</button></div>
+    <div class="files">
+      <button class="file">${ic('folder')}<span class="nm">..</span></button>
+      ${FS['~'].map(([n, t]) => `<button class="file">${ic(t === 'd' ? 'folder' : 'file')}<span class="nm">${n}</span><span class="sz">${t === 'd' ? '—' : t}</span></button>`).join('')}
+    </div>
+    <div class="drop">Drop files here to upload</div>`;
+  s.querySelector('[data-sftp-close]').onclick = ev => { ev.stopPropagation(); s.remove(); btn.setAttribute('aria-pressed', 'false'); };
+  tab.el.querySelector('.term-wrap').appendChild(s);
+}
+
+/* ───────────── Command palette ───────────── */
+let palSel = 0, palItems = [];
+function openPalette() {
+  if (!$('#unlock').hidden) return;
+  $('#palette').hidden = false;
+  $('#palInput').value = '';
+  drawPalette();
+  setTimeout(() => $('#palInput').focus(), 0);
+}
+function closePalette() { $('#palette').hidden = true; }
+function drawPalette() {
+  const q = $('#palInput').value.toLowerCase().trim();
+  const match = s => !q || s.toLowerCase().includes(q);
+  const hosts = HOSTS.filter(h => match(h.name + ' ' + h.host + ' ' + h.group)).map(h => ({
+    sec: 'Hosts', icon: '<span class="dot" style="background:' + h.color + '"></span>', label: h.name, sub: h.user + '@' + h.host, run: () => connect(h.id) }));
+  const actions = [
+    { label: 'New host', icon: ic('plus'), run: () => toast('Editor coming in the real app') },
+    { label: 'Open keychain', icon: ic('keys'), run: () => { state.view = 'keys'; activate('home'); } },
+    { label: 'Toggle theme', icon: ic(getTheme() === 'dark' ? 'sun' : 'moon'), run: () => setTheme(getTheme() === 'dark' ? 'light' : 'dark') },
+    { label: 'Lock vault', icon: ic('lock'), run: lock },
+  ].filter(a => match(a.label)).map(a => ({ ...a, sec: 'Actions', sub: '' }));
+  palItems = [...hosts, ...actions];
+  palSel = Math.min(palSel, Math.max(0, palItems.length - 1));
+  let sec = '';
+  $('#palList').innerHTML = palItems.length ? palItems.map((it, i) => {
+    const head = it.sec !== sec ? `<div class="pal-sec">${(sec = it.sec)}</div>` : '';
+    return head + `<button class="pal-item ${i === palSel ? 'sel' : ''}" data-i="${i}">${it.icon}<span>${esc(it.label)}</span><span class="s">${esc(it.sub)}</span></button>`;
+  }).join('') : `<div class="pal-sec" style="text-transform:none;padding:18px 10px">No matches</div>`;
+}
+$('#palInput').addEventListener('input', () => { palSel = 0; drawPalette(); });
+$('#palInput').addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown') { palSel = (palSel + 1) % palItems.length; drawPalette(); e.preventDefault(); }
+  if (e.key === 'ArrowUp') { palSel = (palSel - 1 + palItems.length) % palItems.length; drawPalette(); e.preventDefault(); }
+  if (e.key === 'Enter' && palItems[palSel]) { const it = palItems[palSel]; closePalette(); it.run(); }
+});
+$('#palList').addEventListener('click', e => { const b = e.target.closest('[data-i]'); if (b) { closePalette(); palItems[+b.dataset.i].run(); } });
+$('#palette').addEventListener('mousedown', e => { if (e.target.id === 'palette') closePalette(); });
+
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); $('#palette').hidden ? openPalette() : closePalette(); }
+  if (e.key === 'Escape' && !$('#palette').hidden) closePalette();
+});
+
+/* ───────────── Toast ───────────── */
+let toastT;
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.hidden = false;
+  clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 1800);
+}
+
+setTheme(document.documentElement.dataset.theme || 'system');
+render();
+</script>
+</body>
+</html>

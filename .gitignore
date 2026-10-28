@@ -1,0 +1,9 @@
+node_modules/
+bin/
+*.exe
+*.log
+.DS_Store
+
+# Frontend build output is embedded into the Go binary; only the placeholder is tracked
+server/internal/web/dist/*
+!server/internal/web/dist/.gitkeep
