@@ -1,0 +1,9 @@
+{$WEBSSH_DOMAIN} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	# WebSockets are proxied transparently. Caddy sets X-Forwarded-For/-Proto,
+	# which the gateway trusts because WEBSSH_TRUST_PROXY=1 in the image.
+	reverse_proxy webssh:7022 {
+		flush_interval -1
+	}
+}

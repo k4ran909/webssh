@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { Snippet } from '../lib/storage'
+import type { Snippet } from '../lib/vault'
 import { Icon } from './icons'
 
 interface Props {
@@ -7,16 +7,17 @@ interface Props {
   canRun: boolean
   broadcast: boolean
   onRun: (s: Snippet) => void
-  onChange: (s: Snippet[]) => void
+  onAdd: (name: string, command: string) => void
+  onDelete: (id: string) => void
 }
 
-export function SnippetsPanel({ snippets, canRun, broadcast, onRun, onChange }: Props) {
+export function SnippetsPanel({ snippets, canRun, broadcast, onRun, onAdd, onDelete }: Props) {
   const [name, setName] = useState('')
   const [command, setCommand] = useState('')
 
   const add = () => {
     if (!name.trim() || !command.trim()) return
-    onChange([...snippets, { id: crypto.randomUUID(), name: name.trim(), command }])
+    onAdd(name.trim(), command)
     setName('')
     setCommand('')
   }
@@ -37,7 +38,7 @@ export function SnippetsPanel({ snippets, canRun, broadcast, onRun, onChange }: 
                 <span className="snip-cmd">{s.command}</span>
               </span>
             </button>
-            <button className="snip-del" title="Delete snippet" aria-label={`Delete ${s.name}`} onClick={() => onChange(snippets.filter((x) => x.id !== s.id))}>
+            <button className="snip-del" title="Delete snippet" aria-label={`Delete ${s.name}`} onClick={() => onDelete(s.id)}>
               <Icon name="trash" size={13} />
             </button>
           </div>

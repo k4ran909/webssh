@@ -369,16 +369,16 @@ Estimates assume one developer working with AI assistance, part-time-ish.
 - [x] Tabs layout that you can switch to without dropping sessions; phones always use tabs.
 - [x] Saved hosts sidebar (no credentials), command palette, snippets, broadcast input, find in terminal, font size, Alt+1–9.
 
-### Phase 1 — MVP (2–3 weeks)
-- [ ] Auth: signup/login, Argon2id, TOTP, sessions.
-- [ ] Zero-knowledge vault: master password, unlock screen, auto-lock, recovery code.
-- [ ] Hosts CRUD with groups + tags + search.
-- [ ] Password + key auth (ed25519/RSA/ECDSA, passphrase keys).
-- [ ] Host-key TOFU + changed-key block.
-- [ ] Multi-tab terminals, themes, font settings.
-- [ ] Connect tickets, Origin check, CSP, rate limits, SSRF egress policy.
-- [ ] Audit log (metadata only).
-- [ ] Docker image + compose + Caddy; deploy to your own VPS.
+### Phase 1 — MVP ✅ (2026-10-28)
+- [x] Auth: signup/login, Argon2id (client) + server-side salted hash of the derived auth key, TOTP with replay protection, cookie sessions, sign-up closes after the owner account.
+- [x] Zero-knowledge vault: one master password split by HKDF into separate login and encryption keys (Bitwarden-style, replacing the separate vault password considered in §6.1), unlock screen, auto-lock, rotating recovery code.
+- [x] Hosts CRUD with color tags + search; optional saved credentials in the vault. (Groups → Phase 2.)
+- [x] Password + key auth (ed25519/RSA/ECDSA, passphrase keys).
+- [x] Host-key TOFU + changed-key block, trusted keys synced in the vault.
+- [x] Multi-tab terminals, themes, font settings.
+- [x] Origin check (API + WS), CSP, rate limits, SSRF egress policy, per-account session cap. Connect tickets dropped: the WS upgrade carries the SameSite=Strict session cookie and is origin-checked, which covers the same threat.
+- [x] Audit log (metadata only) + Activity view.
+- [x] Docker image + compose + Caddy. **Not yet built or run** (no Docker daemon on the dev machine), and not yet deployed to a VPS.
 - **Exit**: you use it daily instead of Termius for basic SSH.
 
 ### Phase 2 — Power features (2–3 weeks)

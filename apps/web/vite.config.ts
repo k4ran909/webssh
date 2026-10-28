@@ -10,6 +10,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/ws': { target: 'ws://127.0.0.1:7022', ws: true },
+      '/api': 'http://127.0.0.1:7022',
       '/healthz': 'http://127.0.0.1:7022',
     },
   },

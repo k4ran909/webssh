@@ -128,8 +128,9 @@ func echoShell(ch ssh.Channel) {
 
 func startGateway(t *testing.T, allowPrivate bool) string {
 	t.Helper()
-	g := New(config.Config{AllowPrivate: allowPrivate, MaxSessions: 4, DialTimeout: 2 * time.Second},
-		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	g := New(config.Config{AllowPrivate: allowPrivate, MaxSessions: 4, MaxUserSessions: 4, DialTimeout: 2 * time.Second},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Hooks{User: func(r *http.Request) (string, bool) { return "u1", r.Header.Get("X-Test-Anon") == "" }})
 	srv := httptest.NewServer(g)
 	t.Cleanup(srv.Close)
 	return "ws" + strings.TrimPrefix(srv.URL, "http")
@@ -318,6 +319,16 @@ func TestCrossOriginRejected(t *testing.T) {
 	}
 	if resp == nil || resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("want 403, got %v", resp)
+	}
+}
+
+func TestAnonymousRejected(t *testing.T) {
+	url := startGateway(t, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: http.Header{"X-Test-Anon": []string{"1"}}})
+	if err == nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401 for anonymous, got %v %v", resp, err)
 	}
 }
 

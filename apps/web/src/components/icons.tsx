@@ -38,7 +38,12 @@ const PATHS = {
   trash: 'M5 7h14M9 7V4.5h6V7M7 7l1 13h8l1-13',
   play: 'M7 5v14l11-7z',
   terminal: 'M4.5 4.5h15v15h-15zM8 10l2.5 2L8 14M12.5 14.5H16',
-  command: 'M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z',
+  lock: 'M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3',
+  user: 'M12 4a4 4 0 1 0 0 8a4 4 0 1 0 0-8M4.5 20a7.5 7.5 0 0 1 15 0',
+  activity: 'M3 12h4l3-8 4 16 3-8h4',
+  key: 'M8 11a4 4 0 1 0 0 8a4 4 0 1 0 0-8M11 13l9-9M16.5 7.5l2.5 2.5M14 10l2 2',
+  logout: 'M15 4.5h3.5v15H15M10 8l-4 4 4 4M6 12h9',
+  command:'M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z',
 }
 
 export type IconName = keyof typeof PATHS

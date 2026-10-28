@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -31,17 +32,59 @@ const (
 	outputChunk      = 32 << 10
 )
 
+// Hooks connect the gateway to accounts and the audit log without importing them.
+type Hooks struct {
+	// User identifies the signed-in account; requests without one are refused.
+	User     func(*http.Request) (string, bool)
+	ClientIP func(*http.Request) string
+	// Audit records metadata only (never keystrokes or credentials).
+	Audit func(userID, action, ip string, detail any)
+}
+
 type Gateway struct {
 	cfg   config.Config
 	log   *slog.Logger
+	hooks Hooks
 	slots chan struct{}
+
+	mu      sync.Mutex
+	perUser map[string]int
 }
 
-func New(cfg config.Config, log *slog.Logger) *Gateway {
-	return &Gateway{cfg: cfg, log: log, slots: make(chan struct{}, cfg.MaxSessions)}
+func New(cfg config.Config, log *slog.Logger, hooks Hooks) *Gateway {
+	if hooks.ClientIP == nil {
+		hooks.ClientIP = func(r *http.Request) string { return r.RemoteAddr }
+	}
+	if hooks.Audit == nil {
+		hooks.Audit = func(string, string, string, any) {}
+	}
+	return &Gateway{cfg: cfg, log: log, hooks: hooks, slots: make(chan struct{}, cfg.MaxSessions), perUser: map[string]int{}}
+}
+
+func (g *Gateway) claim(userID string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.perUser[userID] >= g.cfg.MaxUserSessions {
+		return false
+	}
+	g.perUser[userID]++
+	return true
+}
+
+func (g *Gateway) release(userID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.perUser[userID]--; g.perUser[userID] <= 0 {
+		delete(g.perUser, userID)
+	}
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	userID, ok := g.hooks.User(r)
+	if !ok {
+		http.Error(w, "sign in first", http.StatusUnauthorized)
+		return
+	}
 	// Same-origin is always allowed; anything else must be listed explicitly.
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: g.cfg.AllowedOrigins})
 	if err != nil {
@@ -54,11 +97,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
+	ip := g.hooks.ClientIP(r)
 	s := &session{
-		ws:  ws,
-		cfg: g.cfg,
-		log: g.log.With("remote", r.RemoteAddr),
-		in:  make(chan frame, 64),
+		ws:     ws,
+		cfg:    g.cfg,
+		log:    g.log.With("remote", ip, "account", userID),
+		in:     make(chan frame, 64),
+		userID: userID,
+		ip:     ip,
+		audit:  g.hooks.Audit,
 	}
 	go s.readLoop(ctx, cancel)
 
@@ -70,6 +117,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ws.Close(websocket.StatusTryAgainLater, "busy")
 		return
 	}
+	if !g.claim(userID) {
+		s.fail(ctx, codeBusy, fmt.Sprintf("You already have %d open sessions. Close one first.", g.cfg.MaxUserSessions))
+		ws.Close(websocket.StatusTryAgainLater, "busy")
+		return
+	}
+	defer g.release(userID)
 
 	status, reason := s.run(ctx)
 	ws.Close(status, reason)
@@ -81,10 +134,15 @@ type frame struct {
 }
 
 type session struct {
-	ws  *websocket.Conn
-	cfg config.Config
-	log *slog.Logger
-	in  chan frame
+	ws     *websocket.Conn
+	cfg    config.Config
+	log    *slog.Logger
+	in     chan frame
+	userID string
+	ip     string
+	audit  func(userID, action, ip string, detail any)
+
+	bytesIn, bytesOut atomic.Int64
 
 	// Set by the host key callback during the handshake.
 	fingerprint string
@@ -131,6 +189,7 @@ func (s *session) run(ctx context.Context) (websocket.StatusCode, string) {
 		return websocket.StatusPolicyViolation, "bad connect request"
 	}
 	log := s.log.With("user", req.User, "host", req.Host, "port", req.Port)
+	dest := map[string]any{"host": req.Host, "port": req.Port, "user": req.User}
 
 	client, err := s.dial(ctx, req)
 	req.Auth = nil // drop the credential as soon as the handshake is over
@@ -140,6 +199,8 @@ func (s *session) run(ctx context.Context) (websocket.StatusCode, string) {
 			ge = &gwError{codeHandshake, err.Error()}
 		}
 		log.Info("ssh connect failed", "code", ge.code)
+		dest["result"] = ge.code
+		s.audit(s.userID, "ssh.connect", s.ip, dest)
 		s.fail(ctx, ge.code, ge.msg)
 		return websocket.StatusNormalClosure, ge.code
 	}
@@ -149,7 +210,16 @@ func (s *session) run(ctx context.Context) (websocket.StatusCode, string) {
 	defer stop()
 
 	log.Info("ssh session opened", "fingerprint", s.fingerprint)
-	defer log.Info("ssh session closed")
+	dest["result"], dest["fingerprint"] = "ok", s.fingerprint
+	s.audit(s.userID, "ssh.connect", s.ip, dest)
+	started := time.Now()
+	defer func() {
+		log.Info("ssh session closed")
+		s.audit(s.userID, "ssh.session", s.ip, map[string]any{
+			"host": req.Host, "port": req.Port, "user": req.User,
+			"seconds": int(time.Since(started).Seconds()), "bytesIn": s.bytesIn.Load(), "bytesOut": s.bytesOut.Load(),
+		})
+	}()
 	return s.shell(ctx, client, req)
 }
 
@@ -365,6 +435,7 @@ func (s *session) shell(ctx context.Context, client *ssh.Client, req *clientMsg)
 				if _, err := stdin.Write(f.data); err != nil {
 					return websocket.StatusNormalClosure, "stdin closed"
 				}
+				s.bytesIn.Add(int64(len(f.data)))
 				continue
 			}
 			var m clientMsg
@@ -399,6 +470,7 @@ func (s *session) pumpOutput(ctx context.Context, r io.Reader) {
 			if werr := s.ws.Write(ctx, websocket.MessageBinary, buf[:n]); werr != nil {
 				return
 			}
+			s.bytesOut.Add(int64(n))
 		}
 		if err != nil {
 			return

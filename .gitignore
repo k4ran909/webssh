@@ -7,3 +7,7 @@ bin/
 # Frontend build output is embedded into the Go binary; only the placeholder is tracked
 server/internal/web/dist/*
 !server/internal/web/dist/.gitkeep
+
+# Local gateway data (SQLite + server key)
+data/
+server/data/

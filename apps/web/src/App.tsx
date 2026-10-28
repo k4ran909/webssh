@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import type { Target } from './lib/protocol'
+import type { Auth, Target } from './lib/protocol'
+import type { SignedIn } from './lib/api'
 import { credentialCache, credKey, liveSessions, readySessions, sendText } from './lib/live'
-import {
-  getHosts, getLastTarget, getPrefs, getSnippets, saveHosts, saveLastTarget, savePrefs, saveSnippets,
-  HOST_COLORS, type Prefs, type SavedHost, type Snippet,
-} from './lib/storage'
+import { getLastTarget, saveLastTarget, savePrefs, type Prefs } from './lib/storage'
+import { HOST_COLORS, hasCredentials, useVault, vault, type HostItem, type SavedHost, type Snippet } from './lib/vault'
 import { initialWorkspace, sessionLabel, workspaceReducer, type SessionMeta } from './lib/workspace'
+import { AccountDialog } from './components/AccountDialog'
 import { CommandPalette, type PaletteItem } from './components/CommandPalette'
 import { ConnectForm, type ConnectInitial, type ConnectResult } from './components/ConnectForm'
 import { Dock } from './components/Dock'
@@ -31,29 +31,37 @@ function useMediaQuery(q: string) {
   return match
 }
 
-function usePersisted<T>(load: () => T, save: (v: T) => void) {
-  const [v, setV] = useState(load)
-  const first = useRef(true)
-  useEffect(() => {
-    if (first.current) { first.current = false; return }
-    save(v)
-  }, [v, save])
-  return [v, setV] as const
-}
-
 const sameEndpoint = (h: { host: string; port: number; user: string }, t: { host: string; port: number; user: string }) =>
   h.host.toLowerCase() === t.host.toLowerCase() && h.port === t.port && h.user === t.user
 
-export function App() {
+const hostAuth = (h: HostItem): Auth | undefined =>
+  !hasCredentials(h) ? undefined
+  : h.method === 'password' ? { type: 'password', password: h.password! }
+  : { type: 'key', key: h.key!, passphrase: h.passphrase }
+
+const report = (e: unknown) => console.error('vault write failed', e)
+
+interface Props {
+  session: SignedIn
+  locked: boolean
+  prefs: Prefs
+  setPrefs: (f: (p: Prefs) => Prefs) => void
+  onSession: (s: SignedIn) => void
+  onLock: () => void
+  onLogout: () => void
+}
+
+export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLogout }: Props) {
   const [ws, dispatch] = useReducer(workspaceReducer, initialWorkspace)
   const wsRef = useRef(ws)
   wsRef.current = ws
 
-  const [prefs, setPrefs] = usePersisted<Prefs>(getPrefs, savePrefs)
-  const [hosts, setHosts] = usePersisted<SavedHost[]>(getHosts, saveHosts)
-  const [snippets, setSnippets] = usePersisted<Snippet[]>(getSnippets, saveSnippets)
+  const { hosts, snippets, error: syncError } = useVault()
+  const hostsRef = useRef(hosts)
+  hostsRef.current = hosts
   const [broadcast, setBroadcast] = useState(false)
   const [dialog, setDialog] = useState<Dialog | null>(null)
+  const [account, setAccount] = useState(false)
   const [palette, setPalette] = useState(false)
   const [pop, setPop] = useState<'snippets' | 'settings' | null>(null)
   const theme = useTheme()
@@ -62,12 +70,13 @@ export function App() {
   const showSidebar = prefs.sidebar && !narrow
   const [mobileSidebar, setMobileSidebar] = useState(false)
 
+  useEffect(() => savePrefs(prefs), [prefs])
   const setPref = useCallback(<K extends keyof Prefs>(k: K, v: Prefs[K]) => setPrefs((p) => ({ ...p, [k]: v })), [setPrefs])
 
   // ── sessions ──
   const open = useCallback((target: Target, title?: string, color?: string) => {
     credentialCache.set(credKey(target.host, target.port, target.user), target.auth)
-    const saved = getHosts().find((h) => sameEndpoint(h, target))
+    const saved = hostsRef.current.find((h) => sameEndpoint(h, target))
     dispatch({
       type: 'open',
       target,
@@ -77,13 +86,12 @@ export function App() {
   }, [])
 
   const newConnection = useCallback(() => {
-    const last = getLastTarget()
-    setDialog({ purpose: 'connect', title: 'New connection', initial: { ...last, host: last.host }, offerSave: true })
+    setDialog({ purpose: 'connect', title: 'New connection', initial: { ...getLastTarget() }, offerSave: true })
   }, [])
 
   const openHost = useCallback((h: SavedHost) => {
     setMobileSidebar(false)
-    const auth = credentialCache.get(credKey(h.host, h.port, h.user))
+    const auth = hostAuth(h) ?? credentialCache.get(credKey(h.host, h.port, h.user))
     if (auth) return open({ host: h.host, port: h.port, user: h.user, auth }, h.label || undefined, h.color)
     setDialog({ purpose: 'connect', title: `Connect to ${h.label || h.host}`, initial: h, offerSave: false, hostId: h.id })
   }, [open])
@@ -104,16 +112,18 @@ export function App() {
   }, [])
 
   const upsertHost = (r: ConnectResult, hostId?: string) => {
-    setHosts((list) => {
-      const existing = list.find((h) => h.id === hostId) ?? list.find((h) => sameEndpoint(h, r))
-      const entry: SavedHost = {
-        id: existing?.id ?? crypto.randomUUID(),
-        label: r.label || existing?.label || '',
-        host: r.host, port: r.port, user: r.user, method: r.method,
-        color: r.color,
-      }
-      return existing ? list.map((h) => (h.id === existing.id ? entry : h)) : [...list, entry]
-    })
+    const existing = hostsRef.current.find((h) => h.id === hostId) ?? hostsRef.current.find((h) => sameEndpoint(h, r))
+    const item: HostItem = {
+      kind: 'host', label: r.label || existing?.label || '', color: r.color,
+      host: r.host, port: r.port, user: r.user, method: r.method,
+    }
+    if (r.storeCreds && r.auth) {
+      if (r.auth.type === 'password') item.password = r.auth.password
+      else Object.assign(item, { key: r.auth.key, passphrase: r.auth.passphrase })
+    } else if (existing && !r.clearCreds && existing.method === r.method) {
+      Object.assign(item, { password: existing.password, key: existing.key, passphrase: existing.passphrase })
+    }
+    vault.put(item, existing?.id).catch(report)
   }
 
   const submitDialog = (r: ConnectResult) => {
@@ -136,6 +146,10 @@ export function App() {
     setDialog(null)
   }
 
+  const editHost = useCallback((h: SavedHost) => {
+    setDialog({ purpose: 'save', title: 'Edit host', initial: { ...h, hasCreds: hasCredentials(h) }, hostId: h.id })
+  }, [])
+
   const runSnippet = useCallback((s: Snippet) => {
     const n = sendText(s.command + '\r', wsRef.current.focusedId, broadcast)
     if (n) liveSessions.get(wsRef.current.focusedId ?? '')?.focus()
@@ -149,7 +163,7 @@ export function App() {
     const onKey = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase()
       const inTerminal = !!(e.target as HTMLElement)?.closest?.('.xterm')
-      if ((e.ctrlKey || e.metaKey) && (k === 'k') && (e.shiftKey || !inTerminal)) {
+      if ((e.ctrlKey || e.metaKey) && k === 'k' && (e.shiftKey || !inTerminal)) {
         e.preventDefault()
         setPalette((v) => !v)
       } else if (e.ctrlKey && e.shiftKey && k === 'f') {
@@ -169,10 +183,10 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  // Keep keyboard focus with the focused window's terminal.
+  // Keep keyboard focus with the focused window's terminal (also after unlocking).
   useEffect(() => {
-    if (ws.focusedId && !dialog && !palette) liveSessions.get(ws.focusedId)?.focus()
-  }, [ws.focusedId, dialog, palette])
+    if (ws.focusedId && !dialog && !palette && !account && !locked) liveSessions.get(ws.focusedId)?.focus()
+  }, [ws.focusedId, dialog, palette, account, locked])
 
   // Nothing left to broadcast to.
   useEffect(() => {
@@ -208,8 +222,11 @@ export function App() {
       { id: 'a-font-', section: 'Actions', label: 'Decrease font size', icon: <Icon name="minus" size={14} />, run: () => bumpFont(-1) },
       { id: 'a-side', section: 'Actions', label: prefs.sidebar ? 'Hide sidebar' : 'Show sidebar', icon: <Icon name="sidebar" size={14} />, run: () => setPref('sidebar', !prefs.sidebar) },
       { id: 'a-theme', section: 'Actions', label: theme.resolved === 'dark' ? 'Light theme' : 'Dark theme', icon: <Icon name={theme.resolved === 'dark' ? 'sun' : 'moon'} size={14} />, run: () => theme.setPref(theme.resolved === 'dark' ? 'light' : 'dark') },
+      { id: 'a-account', section: 'Account', label: 'Account & security', hint: session.user.email, icon: <Icon name="user" size={14} />, run: () => setAccount(true) },
+      { id: 'a-lock', section: 'Account', label: 'Lock vault', icon: <Icon name="lock" size={14} />, run: onLock },
+      { id: 'a-logout', section: 'Account', label: 'Sign out', icon: <Icon name="logout" size={14} />, run: onLogout },
     ]
-  }, [ws.sessions, ws.focusedId, hosts, snippets, broadcast, layout, prefs.sidebar, theme, openHost, runSnippet, newConnection, setPref, bumpFont])
+  }, [ws.sessions, ws.focusedId, hosts, snippets, broadcast, layout, prefs.sidebar, theme, session.user.email, openHost, runSnippet, newConnection, setPref, bumpFont, onLock, onLogout])
 
   return (
     <div className="app">
@@ -257,7 +274,14 @@ export function App() {
           <button className="icon-btn" data-popover-anchor title="Snippets" aria-label="Snippets" aria-expanded={pop === 'snippets'} onClick={() => setPop((p) => (p === 'snippets' ? null : 'snippets'))}><Icon name="bolt" /></button>
           {pop === 'snippets' && (
             <Popover onClose={() => setPop(null)} className="right">
-              <SnippetsPanel snippets={snippets} canRun={broadcast ? readySessions().length > 0 : !!ws.focusedId && !!liveSessions.get(ws.focusedId)?.isReady()} broadcast={broadcast} onRun={runSnippet} onChange={setSnippets} />
+              <SnippetsPanel
+                snippets={snippets}
+                canRun={broadcast ? readySessions().length > 0 : !!ws.focusedId && !!liveSessions.get(ws.focusedId)?.isReady()}
+                broadcast={broadcast}
+                onRun={runSnippet}
+                onAdd={(name, command) => vault.put({ kind: 'snippet', name, command }).catch(report)}
+                onDelete={(id) => vault.remove(id).catch(report)}
+              />
             </Popover>
           )}
         </span>
@@ -282,9 +306,14 @@ export function App() {
                   <button aria-label="Larger" onClick={() => bumpFont(1)}><Icon name="plus" size={14} /></button>
                 </div>
               </div>
+              <div className="pop-sep" />
+              <button className="pop-item" onClick={() => { setPop(null); setAccount(true) }}>
+                <Icon name="user" size={14} /><span>Account &amp; security</span><span className="pop-hint">{session.user.email}</span>
+              </button>
             </Popover>
           )}
         </span>
+        <button className="icon-btn" title="Lock vault" aria-label="Lock vault" onClick={onLock}><Icon name="lock" /></button>
         <button className="btn primary" onClick={newConnection}><Icon name="plus" size={14} /><span className="hide-sm">New</span></button>
       </header>
 
@@ -295,10 +324,11 @@ export function App() {
             <Sidebar
               hosts={hosts}
               sessions={ws.sessions}
+              syncError={syncError}
               onOpen={openHost}
               onAdd={() => setDialog({ purpose: 'save', title: 'Add host', initial: {} })}
-              onEdit={(h) => setDialog({ purpose: 'save', title: 'Edit host', initial: h, hostId: h.id })}
-              onDelete={(id) => setHosts((l) => l.filter((h) => h.id !== id))}
+              onEdit={editHost}
+              onDelete={(id) => vault.remove(id).catch(report)}
             />
           </>
         )}
@@ -343,6 +373,18 @@ export function App() {
             />
           </div>
         </div>
+      )}
+
+      {account && (
+        <AccountDialog
+          session={session}
+          autoLock={prefs.autoLock}
+          onAutoLock={(m) => setPref('autoLock', m)}
+          onSession={onSession}
+          onLock={() => { setAccount(false); onLock() }}
+          onLogout={onLogout}
+          onClose={() => setAccount(false)}
+        />
       )}
 
       {palette && <CommandPalette items={paletteItems} onClose={() => setPalette(false)} />}

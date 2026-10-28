@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef } from 'react'
 import type { Action, SessionMeta, WorkspaceState } from '../lib/workspace'
-import type { Layout, SavedHost } from '../lib/storage'
+import type { Layout } from '../lib/storage'
+import type { SavedHost } from '../lib/vault'
 import { WindowFrame } from './WindowFrame'
 import { Icon, Logo } from './icons'
 

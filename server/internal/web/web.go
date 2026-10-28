@@ -38,8 +38,10 @@ func Handler() http.Handler {
 
 // SecurityHeaders sets a strict CSP; any XSS on this origin could drive SSH
 // sessions, so no third-party scripts, styles or fonts are allowed.
+// 'wasm-unsafe-eval' lets the Argon2id key derivation run as WebAssembly; it
+// does not allow eval() of JavaScript.
 func SecurityHeaders(next http.Handler) http.Handler {
-	const csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+	const csp = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; " +
 		"img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
 		"object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1,18 +1,19 @@
 import { useState } from 'react'
-import type { SavedHost } from '../lib/storage'
+import { hasCredentials, type SavedHost } from '../lib/vault'
 import type { Session } from '../lib/workspace'
 import { Icon } from './icons'
 
 interface Props {
   hosts: SavedHost[]
   sessions: Session[]
+  syncError?: string
   onOpen: (h: SavedHost) => void
   onAdd: () => void
   onEdit: (h: SavedHost) => void
   onDelete: (id: string) => void
 }
 
-export function Sidebar({ hosts, sessions, onOpen, onAdd, onEdit, onDelete }: Props) {
+export function Sidebar({ hosts, sessions, syncError, onOpen, onAdd, onEdit, onDelete }: Props) {
   const [q, setQ] = useState('')
   const [confirm, setConfirm] = useState<string | null>(null)
   const needle = q.trim().toLowerCase()
@@ -40,6 +41,7 @@ export function Sidebar({ hosts, sessions, onOpen, onAdd, onEdit, onDelete }: Pr
                 <span className="host-label">{h.label || h.host}</span>
                 <span className="host-addr">{h.user}@{h.host}{h.port === 22 ? '' : ':' + h.port}</span>
               </span>
+              {hasCredentials(h) && <span className="cred-badge" title="Credentials saved in vault"><Icon name="lock" size={12} /></span>}
               {n > 0 && <span className="open-count" title={`${n} open`}>{n}</span>}
               {confirm === h.id ? (
                 <span className="row-actions show" onClick={(e) => e.stopPropagation()}>
@@ -63,7 +65,9 @@ export function Sidebar({ hosts, sessions, onOpen, onAdd, onEdit, onDelete }: Pr
         )}
         {hosts.length > 0 && shown.length === 0 && <div className="side-empty"><p>No match.</p></div>}
       </div>
-      <div className="side-foot">Stored on this device without credentials.</div>
+      <div className={`side-foot${syncError ? ' bad' : ''}`} title={syncError}>
+        <Icon name={syncError ? 'alert' : 'lock'} size={12} /> {syncError ? 'Vault sync failed, retrying' : 'End-to-end encrypted vault'}
+      </div>
     </aside>
   )
 }
