@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getThemePref, saveThemePref } from '../lib/storage'
-import { Icon } from './icons'
+import { getThemePref, saveThemePref, type ThemePref } from '../lib/storage'
 
 const darkQuery = () => matchMedia('(prefers-color-scheme: dark)')
 
@@ -9,32 +8,25 @@ export function applyStoredTheme() {
   if (pref !== 'system') document.documentElement.dataset.theme = pref
 }
 
-function effectiveTheme(): 'light' | 'dark' {
-  const set = document.documentElement.dataset.theme
-  if (set === 'light' || set === 'dark') return set
-  return darkQuery().matches ? 'dark' : 'light'
-}
-
-export function ThemeToggle() {
-  const [theme, setTheme] = useState(effectiveTheme)
+/** Theme preference plus the resolved light/dark value. */
+export function useTheme() {
+  const [pref, setPrefState] = useState<ThemePref>(getThemePref)
+  const [systemDark, setSystemDark] = useState(() => darkQuery().matches)
 
   useEffect(() => {
     const q = darkQuery()
-    const onChange = () => setTheme(effectiveTheme())
+    const onChange = () => setSystemDark(q.matches)
     q.addEventListener('change', onChange)
     return () => q.removeEventListener('change', onChange)
   }, [])
 
-  const toggle = () => {
-    const next = theme === 'dark' ? 'light' : 'dark'
-    document.documentElement.dataset.theme = next
-    saveThemePref(next)
-    setTheme(next)
+  const setPref = (p: ThemePref) => {
+    if (p === 'system') delete document.documentElement.dataset.theme
+    else document.documentElement.dataset.theme = p
+    saveThemePref(p)
+    setPrefState(p)
   }
 
-  return (
-    <button className="icon-btn" onClick={toggle} title="Toggle theme" aria-label="Toggle theme">
-      <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
-    </button>
-  )
+  const resolved: 'light' | 'dark' = pref === 'system' ? (systemDark ? 'dark' : 'light') : pref
+  return { pref, resolved, setPref }
 }

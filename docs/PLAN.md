@@ -364,6 +364,11 @@ Estimates assume one developer working with AI assistance, part-time-ish.
 - Gateway listens on `127.0.0.1:7022` (8080 clashed with another local app).
 - **Exit**: you can SSH into your VPS from the browser. Verified against a local test server in WSL, not yet against a real VPS.
 
+### Workspace ✅ (2026-10-28, pulled forward)
+- [x] Multi-session window manager: drag, 8-edge resize, minimize to dock, maximize, edge snapping (top = maximize, sides = half screen), tile, cascade.
+- [x] Tabs layout that you can switch to without dropping sessions; phones always use tabs.
+- [x] Saved hosts sidebar (no credentials), command palette, snippets, broadcast input, find in terminal, font size, Alt+1–9.
+
 ### Phase 1 — MVP (2–3 weeks)
 - [ ] Auth: signup/login, Argon2id, TOTP, sessions.
 - [ ] Zero-knowledge vault: master password, unlock screen, auto-lock, recovery code.
