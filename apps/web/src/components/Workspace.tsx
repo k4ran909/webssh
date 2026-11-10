@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useRef } from 'react'
 import type { Action, SessionMeta, WorkspaceState } from '../lib/workspace'
 import type { Layout } from '../lib/storage'
 import type { SavedHost } from '../lib/vault'
+import { SftpPanel } from './SftpPanel'
 import { WindowFrame } from './WindowFrame'
 import { Icon, Logo } from './icons'
 
@@ -75,19 +76,24 @@ export function Workspace(p: Props) {
             onDuplicate={p.onDuplicate}
             onSearch={p.onSearch}
           >
-            <Suspense fallback={null}>
-              <TerminalView
-                key={s.attempt}
-                id={s.id}
-                target={s.target}
-                fontSize={p.fontSize}
-                broadcast={p.broadcast}
-                onMeta={p.onMeta}
-                onClose={p.onClose}
-                onReconnect={p.onReconnect}
-                onEdit={p.onEdit}
-              />
-            </Suspense>
+            <div className="term-cell">
+              <Suspense fallback={null}>
+                <TerminalView
+                  key={s.attempt}
+                  id={s.id}
+                  target={s.target}
+                  fontSize={p.fontSize}
+                  broadcast={p.broadcast}
+                  onMeta={p.onMeta}
+                  onClose={p.onClose}
+                  onReconnect={p.onReconnect}
+                  onEdit={p.onEdit}
+                />
+              </Suspense>
+            </div>
+            {s.files && s.meta.sftp && s.meta.phase === 'ready' && (
+              <SftpPanel key={s.meta.sftp} handle={s.meta.sftp} sessionId={s.id} onClose={() => dispatch({ type: 'toggleFiles', id: s.id })} />
+            )}
           </WindowFrame>
         ))}
 

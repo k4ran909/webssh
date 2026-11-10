@@ -381,13 +381,13 @@ Estimates assume one developer working with AI assistance, part-time-ish.
 - [x] Docker image + compose + Caddy. **Not yet built or run** (no Docker daemon on the dev machine), and not yet deployed to a VPS.
 - **Exit**: you use it daily instead of Termius for basic SSH.
 
-### Phase 2 — Power features (2–3 weeks)
-- [ ] Keychain: reusable identities and keys; key generator.
-- [ ] Snippets: library, run in current tab, run on connect.
-- [ ] SFTP panel: browse, upload (drag & drop), download, rename, delete, chmod, inline edit.
-- [ ] Jump hosts (multi-hop).
-- [ ] Import `~/.ssh/config` and Termius export.
-- [ ] Command palette.
+### Phase 2 — Power features ✅ (2026-11-10)
+- [x] Keychain: reusable keys and identities; in-browser Ed25519 key generator (verified to parse and sign in Go's x/crypto/ssh); copy public key; "install on host" types an idempotent authorized_keys command into the focused session.
+- [x] Snippets: library, run in current tab, run on connect (per host).
+- [x] SFTP panel on the open session's SSH connection (no second login): browse, path bar, upload with progress (drag & drop, replace-on-conflict), download as attachment, rename/move, recursive delete with confirm, chmod, inline text editor (≤2 MB), "cd here". All file actions are in the audit log.
+- [x] Jump hosts: multi-hop ProxyJump (up to 4), per-hop host-key prompts and auth errors; egress policy applies to the first hop.
+- [x] Import `~/.ssh/config` (Host/HostName/User/Port/ProxyJump, `Host *` defaults; patterns and Match skipped with a warning). Termius export → not done.
+- [x] Host groups (collapsible in the sidebar). Command palette was done in the workspace milestone.
 
 ### Phase 3 — Pro UX (2–3 weeks)
 - [ ] Split panes + broadcast input.

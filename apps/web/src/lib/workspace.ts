@@ -6,6 +6,8 @@ export interface SessionMeta {
   phase: PhaseKind
   fingerprint?: string
   algo?: string
+  /** Handle for /api/sftp while the session is connected. */
+  sftp?: string
   cols: number
   rows: number
 }
@@ -27,6 +29,8 @@ export interface Session {
   rect: Rect
   minimized: boolean
   maximized: boolean
+  /** SFTP panel open beside the terminal. */
+  files: boolean
   z: number
   meta: SessionMeta
 }
@@ -46,6 +50,7 @@ export type Action =
   | { type: 'snap'; id: string; rect: Rect | 'max' }
   | { type: 'minimize'; id: string }
   | { type: 'toggleMaximize'; id: string }
+  | { type: 'toggleFiles'; id: string }
   | { type: 'restore'; id: string }
   | { type: 'reconnect'; id: string; target?: Target }
   | { type: 'meta'; id: string; meta: Partial<SessionMeta> }
@@ -95,6 +100,7 @@ export function workspaceReducer(s: WorkspaceState, a: Action): WorkspaceState {
         rect: defaultRect(s.sessions.length, s.area),
         minimized: false,
         maximized: false,
+        files: false,
         z,
         meta: { phase: 'connecting', cols: 0, rows: 0 },
       }
@@ -124,6 +130,8 @@ export function workspaceReducer(s: WorkspaceState, a: Action): WorkspaceState {
       const sessions = update(s, a.id, (x) => ({ ...x, minimized: true }))
       return { ...s, sessions, focusedId: s.focusedId === a.id ? topVisible(sessions, a.id) : s.focusedId }
     }
+    case 'toggleFiles':
+      return { ...s, sessions: update(s, a.id, (x) => ({ ...x, files: !x.files })) }
     case 'toggleMaximize':
       return { ...s, sessions: update(s, a.id, (x) => ({ ...x, maximized: !x.maximized })) }
     case 'reconnect':

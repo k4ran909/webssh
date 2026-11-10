@@ -8,15 +8,19 @@ import (
 
 // WebSocket protocol, one socket per terminal session.
 //
-//	client → server  text   {"t":"connect", host, port, user, auth, knownHostKey, cols, rows, term}
+//	client → server  text   {"t":"connect", host, port, user, auth, knownHostKey, jump:[hop…], cols, rows, term}
 //	                 text   {"t":"resize", cols, rows}
 //	                 text   {"t":"hostkey-accept"} | {"t":"hostkey-reject"}
 //	                 binary keystrokes / pasted bytes
-//	server → client  text   {"t":"hostkey", status:"new"|"changed", fingerprint, algo}
-//	                 text   {"t":"ready", fingerprint, algo}
+//	server → client  text   {"t":"hostkey", status:"new"|"changed", host, port, fingerprint, algo}
+//	                 text   {"t":"ready", fingerprint, algo, sftp}
 //	                 text   {"t":"exit", exitCode}
 //	                 text   {"t":"error", code, msg}
 //	                 binary PTY output
+//
+// jump lists bastions in order (ProxyJump); each hop is verified and
+// authenticated on its own. sftp is a handle for /api/sftp/{handle}/… that
+// reuses this session's SSH connection.
 type clientMsg struct {
 	T            string    `json:"t"`
 	Host         string    `json:"host,omitempty"`
@@ -24,10 +28,21 @@ type clientMsg struct {
 	User         string    `json:"user,omitempty"`
 	Auth         *authInfo `json:"auth,omitempty"`
 	KnownHostKey string    `json:"knownHostKey,omitempty"`
+	Jump         []hop     `json:"jump,omitempty"`
 	Cols         int       `json:"cols,omitempty"`
 	Rows         int       `json:"rows,omitempty"`
 	Term         string    `json:"term,omitempty"`
 }
+
+type hop struct {
+	Host         string    `json:"host"`
+	Port         int       `json:"port"`
+	User         string    `json:"user"`
+	Auth         *authInfo `json:"auth"`
+	KnownHostKey string    `json:"knownHostKey,omitempty"`
+}
+
+const maxJumps = 4
 
 // authInfo holds the credential for one handshake. It lives only in memory
 // for the duration of the connect attempt and must never be logged.
@@ -41,6 +56,9 @@ type authInfo struct {
 type serverMsg struct {
 	T           string `json:"t"`
 	Status      string `json:"status,omitempty"`
+	Host        string `json:"host,omitempty"`
+	Port        int    `json:"port,omitempty"`
+	SFTP        string `json:"sftp,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
 	Algo        string `json:"algo,omitempty"`
 	ExitCode    *int   `json:"exitCode,omitempty"`
@@ -70,34 +88,56 @@ func (e *gwError) Error() string { return e.code + ": " + e.msg }
 
 var termRe = regexp.MustCompile(`^[A-Za-z0-9.+-]{1,64}$`)
 
-func (m *clientMsg) validate() error {
-	m.Host = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(m.Host), "["), "]")
-	if m.Host == "" || len(m.Host) > 253 || strings.ContainsAny(m.Host, " \t\r\n/\\@") {
+func (h *hop) validate() error {
+	h.Host = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(h.Host), "["), "]")
+	if h.Host == "" || len(h.Host) > 253 || strings.ContainsAny(h.Host, " \t\r\n/\\@") {
 		return errors.New("invalid host")
 	}
-	if m.Port == 0 {
-		m.Port = 22
+	if h.Port == 0 {
+		h.Port = 22
 	}
-	if m.Port < 1 || m.Port > 65535 {
+	if h.Port < 1 || h.Port > 65535 {
 		return errors.New("invalid port")
 	}
-	if m.User == "" || len(m.User) > 255 || strings.ContainsAny(m.User, "\x00\r\n") {
+	if h.User == "" || len(h.User) > 255 || strings.ContainsAny(h.User, "\x00\r\n") {
 		return errors.New("invalid username")
 	}
-	if m.Auth == nil {
+	if h.Auth == nil {
 		return errors.New("missing credentials")
 	}
-	switch m.Auth.Type {
+	switch h.Auth.Type {
 	case "password":
-		if m.Auth.Password == "" {
+		if h.Auth.Password == "" {
 			return errors.New("missing password")
 		}
 	case "key":
-		if m.Auth.Key == "" {
+		if h.Auth.Key == "" {
 			return errors.New("missing private key")
 		}
 	default:
 		return errors.New("unknown auth type")
+	}
+	return nil
+}
+
+// target is the final destination as a hop.
+func (m *clientMsg) target() *hop {
+	return &hop{Host: m.Host, Port: m.Port, User: m.User, Auth: m.Auth, KnownHostKey: m.KnownHostKey}
+}
+
+func (m *clientMsg) validate() error {
+	t := m.target()
+	if err := t.validate(); err != nil {
+		return err
+	}
+	m.Host, m.Port = t.Host, t.Port
+	if len(m.Jump) > maxJumps {
+		return errors.New("too many jump hosts")
+	}
+	for i := range m.Jump {
+		if err := m.Jump[i].validate(); err != nil {
+			return errors.New("jump host: " + err.Error())
+		}
 	}
 	if m.Term == "" {
 		m.Term = "xterm-256color"

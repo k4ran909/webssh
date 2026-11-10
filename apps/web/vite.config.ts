@@ -17,5 +17,7 @@ export default defineConfig({
   build: {
     outDir: '../../server/internal/web/dist',
     emptyOutDir: true,
+    // Never inline assets as data: URIs; the CSP only allows fonts/images from 'self'.
+    assetsInlineLimit: 0,
   },
 })

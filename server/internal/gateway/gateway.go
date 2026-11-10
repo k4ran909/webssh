@@ -49,6 +49,7 @@ type Gateway struct {
 
 	mu      sync.Mutex
 	perUser map[string]int
+	handles map[string]*sftpHandle
 }
 
 func New(cfg config.Config, log *slog.Logger, hooks Hooks) *Gateway {
@@ -58,7 +59,8 @@ func New(cfg config.Config, log *slog.Logger, hooks Hooks) *Gateway {
 	if hooks.Audit == nil {
 		hooks.Audit = func(string, string, string, any) {}
 	}
-	return &Gateway{cfg: cfg, log: log, hooks: hooks, slots: make(chan struct{}, cfg.MaxSessions), perUser: map[string]int{}}
+	return &Gateway{cfg: cfg, log: log, hooks: hooks, slots: make(chan struct{}, cfg.MaxSessions),
+		perUser: map[string]int{}, handles: map[string]*sftpHandle{}}
 }
 
 func (g *Gateway) claim(userID string) bool {
@@ -103,6 +105,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		cfg:    g.cfg,
 		log:    g.log.With("remote", ip, "account", userID),
 		in:     make(chan frame, 64),
+		gw:     g,
 		userID: userID,
 		ip:     ip,
 		audit:  g.hooks.Audit,
@@ -138,9 +141,12 @@ type session struct {
 	cfg    config.Config
 	log    *slog.Logger
 	in     chan frame
+	gw     *Gateway
 	userID string
 	ip     string
 	audit  func(userID, action, ip string, detail any)
+
+	sftpHandle string
 
 	bytesIn, bytesOut atomic.Int64
 
@@ -190,9 +196,20 @@ func (s *session) run(ctx context.Context) (websocket.StatusCode, string) {
 	}
 	log := s.log.With("user", req.User, "host", req.Host, "port", req.Port)
 	dest := map[string]any{"host": req.Host, "port": req.Port, "user": req.User}
+	if len(req.Jump) > 0 {
+		via := make([]string, len(req.Jump))
+		for i, h := range req.Jump {
+			via[i] = h.User + "@" + net.JoinHostPort(h.Host, strconv.Itoa(h.Port))
+		}
+		dest["via"] = via
+	}
 
-	client, err := s.dial(ctx, req)
-	req.Auth = nil // drop the credential as soon as the handshake is over
+	client, closeAll, err := s.dial(ctx, req)
+	// drop credentials as soon as the handshakes are over
+	req.Auth = nil
+	for i := range req.Jump {
+		req.Jump[i].Auth = nil
+	}
 	if err != nil {
 		var ge *gwError
 		if !errors.As(err, &ge) {
@@ -204,10 +221,13 @@ func (s *session) run(ctx context.Context) (websocket.StatusCode, string) {
 		s.fail(ctx, ge.code, ge.msg)
 		return websocket.StatusNormalClosure, ge.code
 	}
-	defer client.Close()
-	// Closing the client unblocks any stdin write stuck on a full SSH window.
-	stop := context.AfterFunc(ctx, func() { client.Close() })
+	defer closeAll()
+	// Closing the clients unblocks any stdin write stuck on a full SSH window.
+	stop := context.AfterFunc(ctx, closeAll)
 	defer stop()
+
+	s.sftpHandle = s.gw.register(s.userID, client, req.Host)
+	defer s.gw.unregister(s.sftpHandle)
 
 	log.Info("ssh session opened", "fingerprint", s.fingerprint)
 	dest["result"], dest["fingerprint"] = "ok", s.fingerprint
@@ -243,40 +263,84 @@ func (s *session) awaitConnect(ctx context.Context) (*clientMsg, error) {
 	}
 }
 
-func (s *session) dial(ctx context.Context, req *clientMsg) (*ssh.Client, error) {
-	ip, err := resolveTarget(ctx, req.Host, s.cfg.AllowPrivate)
-	if err != nil {
-		return nil, err
-	}
-	auth, err := authMethods(req.Auth)
-	if err != nil {
-		return nil, err
+// dial connects to the target, hopping through req.Jump in order. Only the
+// first hop is subject to the egress policy: later hops are dialed from the
+// bastion's own network, which is the point of a jump host.
+func (s *session) dial(ctx context.Context, req *clientMsg) (*ssh.Client, func(), error) {
+	hops := append(append([]hop{}, req.Jump...), *req.target())
+	var chain []*ssh.Client
+	closeAll := func() {
+		for i := len(chain) - 1; i >= 0; i-- {
+			chain[i].Close()
+		}
 	}
 
-	addr := netip.AddrPortFrom(ip, uint16(req.Port)).String()
-	d := net.Dialer{Timeout: s.cfg.DialTimeout}
-	conn, err := d.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		var opErr *net.OpError
-		if errors.As(err, &opErr) {
-			err = opErr.Err
+	for i := range hops {
+		h := &hops[i]
+		final := i == len(hops)-1
+		var conn net.Conn
+		if i == 0 {
+			ip, err := resolveTarget(ctx, h.Host, s.cfg.AllowPrivate)
+			if err != nil {
+				return nil, nil, err
+			}
+			addr := netip.AddrPortFrom(ip, uint16(h.Port)).String()
+			d := net.Dialer{Timeout: s.cfg.DialTimeout}
+			if conn, err = d.DialContext(ctx, "tcp", addr); err != nil {
+				var opErr *net.OpError
+				if errors.As(err, &opErr) {
+					err = opErr.Err
+				}
+				return nil, nil, &gwError{codeUnreachable, fmt.Sprintf("Could not reach %s: %v", addr, err)}
+			}
+		} else {
+			dctx, cancel := context.WithTimeout(ctx, s.cfg.DialTimeout)
+			c, err := chain[len(chain)-1].DialContext(dctx, "tcp", net.JoinHostPort(h.Host, strconv.Itoa(h.Port)))
+			cancel()
+			if err != nil {
+				closeAll()
+				return nil, nil, &gwError{codeUnreachable, fmt.Sprintf("Jump host %s could not reach %s:%d: %v", hops[i-1].Host, h.Host, h.Port, err)}
+			}
+			conn = c
 		}
-		return nil, &gwError{codeUnreachable, fmt.Sprintf("Could not reach %s: %v", addr, err)}
+		client, err := s.handshake(ctx, conn, h, final)
+		if err != nil {
+			closeAll()
+			return nil, nil, err
+		}
+		chain = append(chain, client)
 	}
+	return chain[len(chain)-1], closeAll, nil
+}
+
+func (s *session) handshake(ctx context.Context, conn net.Conn, h *hop, final bool) (*ssh.Client, error) {
+	auth, err := authMethods(h.Auth)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	// Channels through a bastion don't support deadlines, so a timer bounds
+	// the handshake for both kinds of connection (it includes the user
+	// reading the host key prompt).
+	timer := time.AfterFunc(handshakeTimeout, func() { conn.Close() })
+	defer timer.Stop()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
 
+	where := ""
+	if !final {
+		where = " on jump host " + h.Host
+	}
+	s.hostKeyErr = nil
 	cfg := &ssh.ClientConfig{
-		User:            req.User,
+		User:            h.User,
 		Auth:            auth,
-		HostKeyCallback: s.verifyHostKey(ctx, req.KnownHostKey),
+		HostKeyCallback: s.verifyHostKey(ctx, h, final),
 		BannerCallback: func(msg string) error {
 			return s.ws.Write(ctx, websocket.MessageBinary, []byte(toCRLF(msg)))
 		},
 	}
-	hostport := net.JoinHostPort(req.Host, strconv.Itoa(req.Port))
-	c, chans, reqs, err := ssh.NewClientConn(conn, hostport, cfg)
+	c, chans, reqs, err := ssh.NewClientConn(conn, net.JoinHostPort(h.Host, strconv.Itoa(h.Port)), cfg)
 	if err != nil {
 		conn.Close()
 		switch {
@@ -286,36 +350,40 @@ func (s *session) dial(ctx context.Context, req *clientMsg) (*ssh.Client, error)
 			return nil, ctx.Err()
 		case strings.Contains(err.Error(), "unable to authenticate"):
 			what := "password"
-			if req.Auth.Type == "key" {
+			if h.Auth.Type == "key" {
 				what = "key"
 			}
-			return nil, &gwError{codeAuthFailed, "Authentication failed. Check the username and " + what + "."}
+			return nil, &gwError{codeAuthFailed, "Authentication failed" + where + ". Check the username and " + what + "."}
 		}
-		return nil, &gwError{codeHandshake, err.Error()}
+		return nil, &gwError{codeHandshake, err.Error() + where}
 	}
-	_ = conn.SetDeadline(time.Time{})
 	return ssh.NewClient(c, chans, reqs), nil
 }
 
-// verifyHostKey implements trust-on-first-use. The browser owns the list of
-// trusted keys and sends the one it expects; an unknown key is shown to the
-// user, a mismatched key is a hard failure.
-func (s *session) verifyHostKey(ctx context.Context, known string) ssh.HostKeyCallback {
+// verifyHostKey implements trust-on-first-use per hop. The browser owns the
+// list of trusted keys and sends the one it expects; an unknown key is shown
+// to the user, a mismatched key is a hard failure.
+func (s *session) verifyHostKey(ctx context.Context, h *hop, final bool) ssh.HostKeyCallback {
 	return func(_ string, _ net.Addr, key ssh.PublicKey) error {
 		fp := ssh.FingerprintSHA256(key)
-		s.fingerprint, s.hostKeyAlgo = fp, key.Type()
+		if final {
+			s.fingerprint, s.hostKeyAlgo = fp, key.Type()
+		}
+		msg := serverMsg{T: "hostkey", Host: h.Host, Port: h.Port, Fingerprint: fp, Algo: key.Type()}
 
-		if known != "" {
-			if fp == known {
+		if h.KnownHostKey != "" {
+			if fp == h.KnownHostKey {
 				return nil
 			}
-			_ = s.send(ctx, serverMsg{T: "hostkey", Status: "changed", Fingerprint: fp, Algo: key.Type()})
-			s.hostKeyErr = &gwError{codeHostKeyChanged, "The server's host key does not match the one you trusted. " +
+			msg.Status = "changed"
+			_ = s.send(ctx, msg)
+			s.hostKeyErr = &gwError{codeHostKeyChanged, "The host key of " + h.Host + " does not match the one you trusted. " +
 				"The server may have been reinstalled, or someone may be intercepting the connection."}
 			return s.hostKeyErr
 		}
 
-		if err := s.send(ctx, serverMsg{T: "hostkey", Status: "new", Fingerprint: fp, Algo: key.Type()}); err != nil {
+		msg.Status = "new"
+		if err := s.send(ctx, msg); err != nil {
 			return err
 		}
 		t := time.NewTimer(hostKeyTimeout)
@@ -408,7 +476,7 @@ func (s *session) shell(ctx context.Context, client *ssh.Client, req *clientMsg)
 		s.fail(ctx, codeSession, "Could not start a shell: "+err.Error())
 		return websocket.StatusNormalClosure, codeSession
 	}
-	if err := s.send(ctx, serverMsg{T: "ready", Fingerprint: s.fingerprint, Algo: s.hostKeyAlgo}); err != nil {
+	if err := s.send(ctx, serverMsg{T: "ready", Fingerprint: s.fingerprint, Algo: s.hostKeyAlgo, SFTP: s.sftpHandle}); err != nil {
 		return websocket.StatusNormalClosure, ""
 	}
 

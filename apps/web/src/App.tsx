@@ -2,13 +2,16 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import type { Auth, Target } from './lib/protocol'
 import type { SignedIn } from './lib/api'
 import { credentialCache, credKey, liveSessions, readySessions, sendText } from './lib/live'
+import { credentialsFor, resolveHost, type VaultView } from './lib/resolve'
 import { getLastTarget, saveLastTarget, savePrefs, type Prefs } from './lib/storage'
-import { HOST_COLORS, hasCredentials, useVault, vault, type HostItem, type SavedHost, type Snippet } from './lib/vault'
+import { HOST_COLORS, useVault, vault, type HostItem, type SavedHost, type Snippet } from './lib/vault'
 import { initialWorkspace, sessionLabel, workspaceReducer, type SessionMeta } from './lib/workspace'
 import { AccountDialog } from './components/AccountDialog'
 import { CommandPalette, type PaletteItem } from './components/CommandPalette'
 import { ConnectForm, type ConnectInitial, type ConnectResult } from './components/ConnectForm'
 import { Dock } from './components/Dock'
+import { ImportConfig } from './components/ImportConfig'
+import { Keychain } from './components/Keychain'
 import { Popover } from './components/Popover'
 import { Sidebar } from './components/Sidebar'
 import { SnippetsPanel } from './components/SnippetsPanel'
@@ -17,8 +20,8 @@ import { Workspace } from './components/Workspace'
 import { Icon, Logo } from './components/icons'
 
 type Dialog =
-  | { purpose: 'connect'; title: string; initial: ConnectInitial; offerSave: boolean; sessionId?: string; hostId?: string }
-  | { purpose: 'save'; title: string; initial: ConnectInitial; hostId?: string }
+  | { purpose: 'connect'; title: string; initial: ConnectInitial; offerSave: boolean; sessionId?: string; hostId?: string; notice?: string }
+  | { purpose: 'save'; title: string; initial: ConnectInitial; hostId?: string; notice?: string }
 
 function useMediaQuery(q: string) {
   const [match, setMatch] = useState(() => matchMedia(q).matches)
@@ -34,10 +37,7 @@ function useMediaQuery(q: string) {
 const sameEndpoint = (h: { host: string; port: number; user: string }, t: { host: string; port: number; user: string }) =>
   h.host.toLowerCase() === t.host.toLowerCase() && h.port === t.port && h.user === t.user
 
-const hostAuth = (h: HostItem): Auth | undefined =>
-  !hasCredentials(h) ? undefined
-  : h.method === 'password' ? { type: 'password', password: h.password! }
-  : { type: 'key', key: h.key!, passphrase: h.passphrase }
+const hostInitial = (h: SavedHost): ConnectInitial => ({ ...h, hasCreds: !!(h.password || h.key) })
 
 const report = (e: unknown) => console.error('vault write failed', e)
 
@@ -56,12 +56,18 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
   const wsRef = useRef(ws)
   wsRef.current = ws
 
-  const { hosts, snippets, error: syncError } = useVault()
+  const { hosts, snippets, keys, identities, error: syncError } = useVault()
+  const view: VaultView = useMemo(() => ({ hosts, snippets, keys, identities }), [hosts, snippets, keys, identities])
+  const viewRef = useRef(view)
+  viewRef.current = view
   const hostsRef = useRef(hosts)
   hostsRef.current = hosts
   const [broadcast, setBroadcast] = useState(false)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [account, setAccount] = useState(false)
+  const [keychain, setKeychain] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [notice, setNotice] = useState('')
   const [palette, setPalette] = useState(false)
   const [pop, setPop] = useState<'snippets' | 'settings' | null>(null)
   const theme = useTheme()
@@ -91,9 +97,15 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
 
   const openHost = useCallback((h: SavedHost) => {
     setMobileSidebar(false)
-    const auth = hostAuth(h) ?? credentialCache.get(credKey(h.host, h.port, h.user))
-    if (auth) return open({ host: h.host, port: h.port, user: h.user, auth }, h.label || undefined, h.color)
-    setDialog({ purpose: 'connect', title: `Connect to ${h.label || h.host}`, initial: h, offerSave: false, hostId: h.id })
+    const v = viewRef.current
+    const cached = credentialCache.get(credKey(h.host, h.port, h.user))
+    const r = resolveHost(h, v, credentialsFor(h, v) ? undefined : cached && { user: h.user, auth: cached })
+    if (r.ok) return open(r.target, r.title, h.color)
+    if (r.reason === 'credentials' && r.host.id === h.id) {
+      return setDialog({ purpose: 'connect', title: `Connect to ${h.label || h.host}`, initial: hostInitial(h), offerSave: false, hostId: h.id })
+    }
+    // A jump host (or keychain entry) needs fixing first.
+    setDialog({ purpose: 'save', title: `Edit ${r.host.label || r.host.host}`, initial: hostInitial(r.host), hostId: r.host.id, notice: r.message })
   }, [open])
 
   const onMeta = useCallback((id: string, meta: Partial<SessionMeta>) => dispatch({ type: 'meta', id, meta }), [])
@@ -108,22 +120,48 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
     const s = wsRef.current.sessions.find((x) => x.id === id)
     if (!s) return
     const { host, port, user, auth } = s.target
-    setDialog({ purpose: 'connect', title: 'Edit connection', initial: { host, port, user, method: auth.type }, offerSave: false, sessionId: id })
+    const saved = hostsRef.current.find((h) => sameEndpoint(h, s.target))
+    setDialog({
+      purpose: 'connect', title: 'Edit connection', offerSave: false, sessionId: id, hostId: saved?.id,
+      initial: { ...(saved ? hostInitial(saved) : {}), host, port, user, method: auth.type },
+    })
   }, [])
 
-  const upsertHost = (r: ConnectResult, hostId?: string) => {
+  const upsertHost = (r: ConnectResult, hostId?: string): string => {
     const existing = hostsRef.current.find((h) => h.id === hostId) ?? hostsRef.current.find((h) => sameEndpoint(h, r))
     const item: HostItem = {
       kind: 'host', label: r.label || existing?.label || '', color: r.color,
       host: r.host, port: r.port, user: r.user, method: r.method,
+      group: r.group, jumpHostId: r.jumpHostId, startupSnippetId: r.startupSnippetId,
     }
-    if (r.storeCreds && r.auth) {
+    if (r.ref) {
+      if (r.ref.kind === 'identity') item.identityId = r.ref.id
+      else item.keyId = r.ref.id
+    } else if (r.storeCreds && r.auth) {
       if (r.auth.type === 'password') item.password = r.auth.password
       else Object.assign(item, { key: r.auth.key, passphrase: r.auth.passphrase })
     } else if (existing && !r.clearCreds && existing.method === r.method) {
       Object.assign(item, { password: existing.password, key: existing.key, passphrase: existing.passphrase })
     }
-    vault.put(item, existing?.id).catch(report)
+    const id = existing?.id ?? crypto.randomUUID()
+    vault.put(item, id).catch(report)
+    return id
+  }
+
+  /** Credentials from the form: inline, or looked up in the keychain. */
+  const formCredentials = (r: ConnectResult): { user: string; auth: Auth } | undefined => {
+    if (r.auth) return { user: r.user, auth: r.auth }
+    if (!r.ref) return undefined
+    const v = viewRef.current
+    if (r.ref.kind === 'identity') {
+      const id = v.identities.find((i) => i.id === r.ref!.id)
+      const k = v.keys.find((x) => x.id === id?.keyId)
+      if (id && k) return { user: id.username, auth: { type: 'key', key: k.privateKey, passphrase: k.passphrase } }
+      if (id?.password) return { user: id.username, auth: { type: 'password', password: id.password } }
+      return undefined
+    }
+    const k = v.keys.find((x) => x.id === r.ref!.id)
+    return k ? { user: r.user, auth: { type: 'key', key: k.privateKey, passphrase: k.passphrase } } : undefined
   }
 
   const submitDialog = (r: ConnectResult) => {
@@ -133,22 +171,39 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
       setDialog(null)
       return
     }
-    const target: Target = { host: r.host, port: r.port, user: r.user, auth: r.auth! }
+    const creds = formCredentials(r)
+    if (!creds) return setNotice('That keychain entry has no usable credential.')
     saveLastTarget({ host: r.host, port: r.port, user: r.user, method: r.method })
-    if (r.save) upsertHost(r)
+    const savedId = r.save ? upsertHost(r) : undefined
+    // Resolve as a (possibly unsaved) host so jump hosts and run-on-connect apply.
+    const existing = hostsRef.current.find((h) => h.id === (dialog.hostId ?? savedId))
+    const asHost: SavedHost = {
+      ...(existing ?? { kind: 'host', id: savedId ?? 'adhoc', label: r.label, color: r.color, method: r.method }),
+      host: r.host, port: r.port, user: creds.user,
+      jumpHostId: r.jumpHostId ?? existing?.jumpHostId,
+      startupSnippetId: r.startupSnippetId ?? existing?.startupSnippetId,
+    } as SavedHost
+    const res = resolveHost(asHost, viewRef.current, creds)
+    if (!res.ok) return setNotice(res.message)
+    credentialCache.set(credKey(r.host, r.port, creds.user), creds.auth)
     if (dialog.sessionId) {
-      credentialCache.set(credKey(target.host, target.port, target.user), target.auth)
-      dispatch({ type: 'reconnect', id: dialog.sessionId, target })
+      dispatch({ type: 'reconnect', id: dialog.sessionId, target: res.target })
       dispatch({ type: 'restore', id: dialog.sessionId })
     } else {
-      open(target, r.save && r.label ? r.label : undefined, r.save ? r.color : undefined)
+      open(res.target, r.save && r.label ? r.label : existing?.label || undefined, r.save ? r.color : existing?.color)
     }
     setDialog(null)
   }
 
   const editHost = useCallback((h: SavedHost) => {
-    setDialog({ purpose: 'save', title: 'Edit host', initial: { ...h, hasCreds: hasCredentials(h) }, hostId: h.id })
+    setDialog({ purpose: 'save', title: 'Edit host', initial: hostInitial(h), hostId: h.id })
   }, [])
+
+  useEffect(() => {
+    if (!notice) return
+    const t = setTimeout(() => setNotice(''), 5000)
+    return () => clearTimeout(t)
+  }, [notice])
 
   const runSnippet = useCallback((s: Snippet) => {
     const n = sendText(s.command + '\r', wsRef.current.focusedId, broadcast)
@@ -222,6 +277,9 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
       { id: 'a-font-', section: 'Actions', label: 'Decrease font size', icon: <Icon name="minus" size={14} />, run: () => bumpFont(-1) },
       { id: 'a-side', section: 'Actions', label: prefs.sidebar ? 'Hide sidebar' : 'Show sidebar', icon: <Icon name="sidebar" size={14} />, run: () => setPref('sidebar', !prefs.sidebar) },
       { id: 'a-theme', section: 'Actions', label: theme.resolved === 'dark' ? 'Light theme' : 'Dark theme', icon: <Icon name={theme.resolved === 'dark' ? 'sun' : 'moon'} size={14} />, run: () => theme.setPref(theme.resolved === 'dark' ? 'light' : 'dark') },
+      { id: 'a-keychain', section: 'Actions', label: 'Open keychain', hint: 'keys & identities', icon: <Icon name="key" size={14} />, run: () => setKeychain(true) },
+      { id: 'a-import', section: 'Actions', label: 'Import ~/.ssh/config', icon: <Icon name="import" size={14} />, run: () => setImporting(true) },
+      ...(ws.focusedId ? [{ id: 'a-files', section: 'Actions', label: 'Toggle files (SFTP)', icon: <Icon name="folder" size={14} />, run: () => dispatch({ type: 'toggleFiles', id: ws.focusedId! }) }] : []),
       { id: 'a-account', section: 'Account', label: 'Account & security', hint: session.user.email, icon: <Icon name="user" size={14} />, run: () => setAccount(true) },
       { id: 'a-lock', section: 'Account', label: 'Lock vault', icon: <Icon name="lock" size={14} />, run: onLock },
       { id: 'a-logout', section: 'Account', label: 'Sign out', icon: <Icon name="logout" size={14} />, run: onLogout },
@@ -329,6 +387,8 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
               onAdd={() => setDialog({ purpose: 'save', title: 'Add host', initial: {} })}
               onEdit={editHost}
               onDelete={(id) => vault.remove(id).catch(report)}
+              onKeychain={() => setKeychain(true)}
+              onImport={() => setImporting(true)}
             />
           </>
         )}
@@ -368,6 +428,8 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
               purpose={dialog.purpose}
               initial={dialog.initial}
               offerSave={dialog.purpose === 'connect' && dialog.offerSave}
+              choices={view}
+              notice={dialog.notice}
               onSubmit={submitDialog}
               onCancel={() => setDialog(null)}
             />
@@ -387,7 +449,27 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
         />
       )}
 
+      {keychain && (
+        <Keychain
+          keys={keys}
+          identities={identities}
+          hosts={hosts}
+          canInstall={!!ws.focusedId && !!liveSessions.get(ws.focusedId)?.isReady()}
+          onInstall={(cmd) => {
+            sendText(cmd + '\r', wsRef.current.focusedId, false)
+            setKeychain(false)
+            setNotice('Installing the public key in the focused session…')
+          }}
+          onClose={() => setKeychain(false)}
+        />
+      )}
+      {importing && (
+        <ImportConfig hosts={hosts} onClose={() => setImporting(false)}
+          onDone={(n) => { setImporting(false); setNotice(`Imported ${n} host${n === 1 ? '' : 's'}.`) }} />
+      )}
+
       {palette && <CommandPalette items={paletteItems} onClose={() => setPalette(false)} />}
+      {notice && <div className="notice" role="status">{notice}</div>}
     </div>
   )
 }

@@ -4,32 +4,31 @@ export type Auth =
   | { type: 'password'; password: string }
   | { type: 'key'; key: string; passphrase?: string }
 
-export interface Target {
+export interface Endpoint {
   host: string
   port: number
   user: string
   auth: Auth
 }
 
+export interface Target extends Endpoint {
+  /** Bastions to hop through, outermost first (ProxyJump). */
+  jump?: (Endpoint & { label?: string })[]
+  /** Command typed into the shell once it's ready. */
+  startup?: string
+}
+
+type WireHop = Endpoint & { knownHostKey: string }
+
 export type ClientMsg =
-  | {
-      t: 'connect'
-      host: string
-      port: number
-      user: string
-      auth: Auth
-      knownHostKey: string
-      cols: number
-      rows: number
-      term: string
-    }
+  | (WireHop & { t: 'connect'; jump?: WireHop[]; cols: number; rows: number; term: string })
   | { t: 'resize'; cols: number; rows: number }
   | { t: 'hostkey-accept' }
   | { t: 'hostkey-reject' }
 
 export type ServerMsg =
-  | { t: 'hostkey'; status: 'new' | 'changed'; fingerprint: string; algo: string }
-  | { t: 'ready'; fingerprint: string; algo: string }
+  | { t: 'hostkey'; status: 'new' | 'changed'; host: string; port: number; fingerprint: string; algo: string }
+  | { t: 'ready'; fingerprint: string; algo: string; sftp?: string }
   | { t: 'exit'; exitCode: number }
   | { t: 'error'; code: string; msg: string }
 

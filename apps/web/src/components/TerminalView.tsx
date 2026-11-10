@@ -14,11 +14,11 @@ import { Icon } from './icons'
 
 type Phase =
   | { kind: 'connecting' }
-  | { kind: 'hostkey'; fingerprint: string; algo: string }
+  | { kind: 'hostkey'; host: string; port: number; fingerprint: string; algo: string; via: boolean }
   | { kind: 'ready'; fingerprint: string; algo: string }
   | { kind: 'ended'; exitCode: number }
   | { kind: 'lost' }
-  | { kind: 'error'; code: string; msg: string; fingerprint?: string }
+  | { kind: 'error'; code: string; msg: string; changed?: { host: string; port: number; fingerprint: string } }
 
 const DIM = '\x1b[90m'
 const RESET = '\x1b[0m'
@@ -73,14 +73,15 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
     let ready = false
     let finished = false
     let ws: WebSocket | null = null
-    let changedFingerprint: string | undefined
+    let changed: { host: string; port: number; fingerprint: string } | undefined
     const enc = new TextEncoder()
 
-    const setPhase = (p: Phase) => {
+    const setPhase = (p: Phase, extra: Partial<SessionMeta> = {}) => {
       setPhaseState(p)
       metaRef.current(id, {
         phase: p.kind,
         ...(p.kind === 'ready' ? { fingerprint: p.fingerprint, algo: p.algo } : {}),
+        ...extra,
       })
     }
 
@@ -138,7 +139,8 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
       }
       fitSafe()
       metaRef.current(id, { cols: term.cols, rows: term.rows })
-      note(`Connecting to ${target.host}:${target.port} …`)
+      const via = target.jump?.map((j) => j.label || j.host).join(' → ')
+      note(`Connecting to ${target.host}:${target.port}${via ? ` via ${via}` : ''} …`)
 
       ws = new WebSocket(gatewayURL())
       ws.binaryType = 'arraybuffer'
@@ -150,6 +152,9 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
           user: target.user,
           auth: target.auth,
           knownHostKey: getKnownHost(target.host, target.port) ?? '',
+          jump: target.jump?.map((j) => ({
+            host: j.host, port: j.port, user: j.user, auth: j.auth, knownHostKey: getKnownHost(j.host, j.port) ?? '',
+          })),
           cols: term.cols,
           rows: term.rows,
           term: 'xterm-256color',
@@ -161,18 +166,22 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
         }
         const m = JSON.parse(e.data) as ServerMsg
         switch (m.t) {
-          case 'hostkey':
-            if (m.status === 'new') setPhase({ kind: 'hostkey', fingerprint: m.fingerprint, algo: m.algo })
-            else changedFingerprint = m.fingerprint
+          case 'hostkey': {
+            const isJump = !(m.host === target.host && m.port === target.port)
+            if (m.status === 'new') setPhase({ kind: 'hostkey', host: m.host, port: m.port, fingerprint: m.fingerprint, algo: m.algo, via: isJump })
+            else changed = { host: m.host, port: m.port, fingerprint: m.fingerprint }
             break
+          }
           case 'ready':
             ready = true
             note(`\x1b[32m✓${DIM} ${algoLabel(m.algo)} host key verified · authenticated as ${target.user}`)
             term.write('\r\n')
             // The PTY was sized at connect time; catch up with any resize since.
             sendRef.current({ t: 'resize', cols: term.cols, rows: term.rows })
-            setPhase({ kind: 'ready', fingerprint: m.fingerprint, algo: m.algo })
+            setPhase({ kind: 'ready', fingerprint: m.fingerprint, algo: m.algo }, { sftp: m.sftp })
             term.focus()
+            // Run-on-connect snippet, once the shell has had a moment to print its prompt.
+            if (target.startup) setTimeout(() => ready && send(enc.encode(target.startup + '\r')), 400)
             break
           case 'exit':
             finished = true
@@ -186,7 +195,7 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
             finished = true
             ready = false
             term.write(`\x1b[31m✕ ${m.msg}${RESET}\r\n`)
-            setPhase({ kind: 'error', code: m.code, msg: m.msg, fingerprint: changedFingerprint })
+            setPhase({ kind: 'error', code: m.code, msg: m.msg, changed })
             break
         }
       }
@@ -275,13 +284,14 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
 
   const trust = () => {
     if (phase.kind !== 'hostkey') return
-    saveKnownHost(target.host, target.port, phase.fingerprint)
+    saveKnownHost(phase.host, phase.port, phase.fingerprint)
     sendRef.current({ t: 'hostkey-accept' })
     setPhaseState({ kind: 'connecting' })
   }
 
+  const changedHop = phase.kind === 'error' ? phase.changed : undefined
   const forgetAndRetry = () => {
-    forgetKnownHost(target.host, target.port)
+    forgetKnownHost(changedHop?.host ?? target.host, changedHop?.port ?? target.port)
     onReconnect(id)
   }
 
@@ -316,8 +326,8 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
 
       {phase.kind === 'hostkey' && (
         <div className="card" role="dialog" aria-label="New host key">
-          <h4><Icon name="shield" /> New host key</h4>
-          <p>First connection to <b>{target.host}</b>. Check that this fingerprint matches the server before trusting it.</p>
+          <h4><Icon name="shield" /> New host key{phase.via ? ' · jump host' : ''}</h4>
+          <p>First connection to <b>{phase.host}{phase.port === 22 ? '' : ':' + phase.port}</b>. Check that this fingerprint matches the server before trusting it.</p>
           <div className="fp"><small>{algoLabel(phase.algo)}</small>{phase.fingerprint}</div>
           <div className="acts">
             <button className="btn" onClick={() => sendRef.current({ t: 'hostkey-reject' })}>Cancel</button>
@@ -330,8 +340,8 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
         <div className="card danger" role="alertdialog" aria-label="Host key changed">
           <h4><Icon name="alert" /> Host key changed</h4>
           <p>{phase.msg} Only continue if you know why the key changed.</p>
-          <div className="fp"><small>Trusted</small>{getKnownHost(target.host, target.port)}</div>
-          {phase.fingerprint && <div className="fp now"><small>Server now presents</small>{phase.fingerprint}</div>}
+          <div className="fp"><small>Trusted</small>{getKnownHost(changedHop?.host ?? target.host, changedHop?.port ?? target.port)}</div>
+          {changedHop && <div className="fp now"><small>Server now presents</small>{changedHop.fingerprint}</div>}
           <div className="acts">
             <button className="btn" onClick={forgetAndRetry}>Forget old key &amp; retry</button>
             <button className="btn primary" onClick={() => onClose(id)} autoFocus>Close session</button>

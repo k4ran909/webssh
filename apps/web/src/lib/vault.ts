@@ -17,6 +17,14 @@ export interface HostItem {
   password?: string
   key?: string
   passphrase?: string
+  /** Credentials from the keychain instead of inline ones. */
+  keyId?: string
+  identityId?: string
+  group?: string
+  /** Connect through this saved host first (ProxyJump). */
+  jumpHostId?: string
+  /** Snippet typed into the shell after connecting. */
+  startupSnippetId?: string
 }
 export interface SnippetItem {
   kind: 'snippet'
@@ -28,15 +36,36 @@ export interface KnownHostItem {
   hostPort: string
   fingerprint: string
 }
-export type ItemBody = HostItem | SnippetItem | KnownHostItem
+/** A private key in the keychain, reusable across hosts. */
+export interface KeyItem {
+  kind: 'key'
+  label: string
+  type: string
+  privateKey: string
+  passphrase?: string
+  publicKey?: string
+  fingerprint?: string
+}
+/** A reusable login: username plus a password or a keychain key. */
+export interface IdentityItem {
+  kind: 'identity'
+  label: string
+  username: string
+  password?: string
+  keyId?: string
+}
+export type ItemBody = HostItem | SnippetItem | KnownHostItem | KeyItem | IdentityItem
 export type Entry<T extends ItemBody = ItemBody> = T & { id: string }
 
 export type SavedHost = Entry<HostItem>
 export type Snippet = Entry<SnippetItem>
+export type SavedKey = Entry<KeyItem>
+export type Identity = Entry<IdentityItem>
 
 export const HOST_COLORS = ['#a3a3a3', '#f87171', '#fbbf24', '#4ade80', '#8ab4f8', '#d7aefb']
 
-export const hasCredentials = (h: HostItem) => (h.method === 'password' ? !!h.password : !!h.key)
+export const hasCredentials = (h: HostItem) =>
+  !!h.identityId || !!h.keyId || (h.method === 'password' ? !!h.password : !!h.key)
 
 interface State {
   unlocked: boolean
@@ -190,11 +219,14 @@ export const vault = new Vault()
 
 export function useVault() {
   const s = useSyncExternalStore(vault.subscribe, vault.getState)
+  const byLabel = (a: { label: string }, b: { label: string }) => a.label.localeCompare(b.label)
   return {
     unlocked: s.unlocked,
     error: s.error,
     hosts: s.entries.filter((e): e is SavedHost => e.kind === 'host').sort((a, b) => (a.label || a.host).localeCompare(b.label || b.host)),
     snippets: s.entries.filter((e): e is Snippet => e.kind === 'snippet'),
+    keys: s.entries.filter((e): e is SavedKey => e.kind === 'key').sort(byLabel),
+    identities: s.entries.filter((e): e is Identity => e.kind === 'identity').sort(byLabel),
   }
 }
 

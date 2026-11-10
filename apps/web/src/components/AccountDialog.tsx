@@ -217,16 +217,27 @@ const ACTIONS: Record<string, string> = {
   'recovery.regenerated': 'New recovery code',
   'ssh.connect': 'SSH connect',
   'ssh.session': 'SSH session ended',
+  'sftp.upload': 'File uploaded',
+  'sftp.download': 'File downloaded',
+  'sftp.rename': 'File renamed',
+  'sftp.remove': 'File deleted',
+  'sftp.chmod': 'Permissions changed',
 }
 
 const fmtBytes = (n: number) => (n < 1024 ? `${n} B` : n < 1 << 20 ? `${(n / 1024).toFixed(1)} KB` : `${(n / (1 << 20)).toFixed(1)} MB`)
 const fmtDur = (s: number) => (s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`)
 
 function describe(e: AuditEvent): { text: string; bad: boolean } {
-  let d: Record<string, string | number> = {}
+  let d: Record<string, string | number | string[]> = {}
   try { d = JSON.parse(e.detail) } catch { /* old rows */ }
   const dest = d.host ? `${d.user}@${d.host}${d.port && d.port !== 22 ? ':' + d.port : ''}` : ''
-  if (e.action === 'ssh.connect') return { text: `${dest}${d.result !== 'ok' ? ` · ${d.result}` : ''}`, bad: d.result !== 'ok' }
+  const via = Array.isArray(d.via) ? ` via ${d.via.join(' → ')}` : ''
+  if (e.action === 'ssh.connect') return { text: `${dest}${via}${d.result !== 'ok' ? ` · ${d.result}` : ''}`, bad: d.result !== 'ok' }
+  if (e.action.startsWith('sftp.')) {
+    const name = (p: unknown) => String(p ?? '').split('/').pop()
+    const extra = e.action === 'sftp.rename' ? ` → ${name(d.to)}` : e.action === 'sftp.chmod' ? ` → ${d.mode}` : d.bytes != null ? ` · ${fmtBytes(Number(d.bytes))}` : ''
+    return { text: `${d.host}: ${name(d.path)}${extra}`, bad: false }
+  }
   if (e.action === 'ssh.session') return { text: `${dest} · ${fmtDur(Number(d.seconds))} · ↑${fmtBytes(Number(d.bytesIn))} ↓${fmtBytes(Number(d.bytesOut))}`, bad: false }
   if (e.action === 'login.failed') return { text: `wrong ${d.reason === 'totp' ? '2FA code' : 'password'}`, bad: true }
   return { text: '', bad: e.action.endsWith('.failed') }

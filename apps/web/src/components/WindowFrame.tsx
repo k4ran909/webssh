@@ -130,6 +130,16 @@ export const WindowFrame = memo(function WindowFrame({ session, focused, tabbed,
           <span className="win-title">{session.title}</span>
           {meta.cols > 0 && <span className="win-size">{meta.cols}×{meta.rows}</span>}
           <span className="win-actions">
+            <button
+              title={meta.sftp ? 'Files (SFTP)' : 'Files are available once connected'}
+              aria-label="Files"
+              aria-pressed={session.files}
+              className={session.files ? 'on' : ''}
+              disabled={!meta.sftp}
+              onClick={() => dispatch({ type: 'toggleFiles', id })}
+            >
+              <Icon name="folder" size={14} />
+            </button>
             <button title="Find (Ctrl+Shift+F)" aria-label="Find" onClick={() => onSearch(id)}><Icon name="search" size={14} /></button>
             <button title="Duplicate session" aria-label="Duplicate session" onClick={() => onDuplicate(id)}><Icon name="copy" size={14} /></button>
             {!tabbed && (

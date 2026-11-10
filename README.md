@@ -2,7 +2,7 @@
 
 A self-hosted, browser-based SSH client: a Go gateway bridges WebSocket ↔ SSH, and a React + xterm.js frontend renders the terminal. Hosts, saved credentials, snippets and trusted host keys live in an end-to-end encrypted vault. "webssh" is a placeholder name.
 
-**Status: Phase 1 (accounts + encrypted vault) on top of the multi-session workspace.** See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [design/THEME.md](design/THEME.md) for the visual system.
+**Status: Phase 2 (SFTP, jump hosts, keychain) on top of accounts, the encrypted vault and the multi-session workspace.** See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [design/THEME.md](design/THEME.md) for the visual system.
 
 ## Features
 
@@ -14,6 +14,13 @@ A self-hosted, browser-based SSH client: a Go gateway bridges WebSocket ↔ SSH,
 - **Auto-lock** after inactivity (default 15 minutes) and a manual lock. Open SSH sessions keep running behind the lock screen.
 - **Activity log** of sign-ins, security changes and SSH connections (destination, duration, bytes). It never records terminal contents.
 - **Change master password** re-wraps the vault key and signs out your other devices.
+
+**Servers and files**
+- **SFTP panel** beside each terminal, using the same SSH connection (no second login). Browse, upload with progress (drag and drop), download, rename/move, delete, chmod, and edit text files in place. "cd here" moves the shell to the folder you're viewing.
+- **Jump hosts** (ProxyJump): pick a saved host to connect through, chaining up to 4 hops. Each hop has its own host-key check.
+- **Keychain**: reusable keys and identities (username plus password or key). Generate Ed25519 keys in the browser, copy the public key, or install it on the server you're connected to with one click.
+- **Import `~/.ssh/config`**: brings in hosts, users, ports and ProxyJump.
+- **Host groups** and **run-on-connect snippets** per host.
 
 **Workspace**
 - **Window manager.** Each session is a window you can drag, resize from any edge, minimize to the dock, maximize (or double-click the title), and close. Drag a window to the top edge to maximize it, or to the left/right edge to snap it to half the screen. Use Tile or Cascade to arrange everything.

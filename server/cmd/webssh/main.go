@@ -54,6 +54,7 @@ func run(log *slog.Logger) error {
 	mux := http.NewServeMux()
 	a.Routes(mux)
 	mux.Handle("GET /ws/terminal", a.RequireUser(gw))
+	gw.SFTPRoutes(mux, a.RequireUser)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 	mux.Handle("GET /", web.Handler())
 

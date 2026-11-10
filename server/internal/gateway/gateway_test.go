@@ -15,11 +15,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/k4ran909/webssh/internal/config"
@@ -29,6 +31,15 @@ import (
 // returned client key, echoes input as "echo:<data>", reports window changes,
 // and exits with status 3 when it receives "exit".
 func testSSHServer(t *testing.T) (port int, hostFP string, clientKeyPEM string) {
+	return testSSHServerWith(t, serverOpts{})
+}
+
+type serverOpts struct {
+	forward  bool   // act as a bastion: accept direct-tcpip channels
+	sftpRoot string // serve the sftp subsystem from this directory
+}
+
+func testSSHServerWith(t *testing.T, opts serverOpts) (port int, hostFP string, clientKeyPEM string) {
 	t.Helper()
 	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
 	hostSigner, _ := ssh.NewSignerFromKey(hostPriv)
@@ -67,13 +78,13 @@ func testSSHServer(t *testing.T) (port int, hostFP string, clientKeyPEM string) 
 			if err != nil {
 				return
 			}
-			go serveTestConn(conn, cfg)
+			go serveTestConn(conn, cfg, opts)
 		}
 	}()
 	return ln.Addr().(*net.TCPAddr).Port, ssh.FingerprintSHA256(hostSigner.PublicKey()), string(pem.EncodeToMemory(block))
 }
 
-func serveTestConn(conn net.Conn, cfg *ssh.ServerConfig) {
+func serveTestConn(conn net.Conn, cfg *ssh.ServerConfig, opts serverOpts) {
 	_, chans, reqs, err := ssh.NewServerConn(conn, cfg)
 	if err != nil {
 		conn.Close()
@@ -81,6 +92,10 @@ func serveTestConn(conn net.Conn, cfg *ssh.ServerConfig) {
 	}
 	go ssh.DiscardRequests(reqs)
 	for nc := range chans {
+		if nc.ChannelType() == "direct-tcpip" && opts.forward {
+			forwardTCP(nc)
+			continue
+		}
 		if nc.ChannelType() != "session" {
 			nc.Reject(ssh.UnknownChannelType, "no")
 			continue
@@ -92,6 +107,19 @@ func serveTestConn(conn net.Conn, cfg *ssh.ServerConfig) {
 		go func() {
 			for req := range creqs {
 				switch req.Type {
+				case "subsystem":
+					var p struct{ Name string }
+					if ssh.Unmarshal(req.Payload, &p) != nil || p.Name != "sftp" || opts.sftpRoot == "" {
+						req.Reply(false, nil)
+						continue
+					}
+					req.Reply(true, nil)
+					srv, err := sftp.NewServer(ch, sftp.WithServerWorkingDirectory(opts.sftpRoot))
+					if err != nil {
+						ch.Close()
+						continue
+					}
+					go func() { srv.Serve(); ch.Close() }()
 				case "pty-req", "shell":
 					req.Reply(true, nil)
 					if req.Type == "shell" {
@@ -110,6 +138,32 @@ func serveTestConn(conn net.Conn, cfg *ssh.ServerConfig) {
 	}
 }
 
+func forwardTCP(nc ssh.NewChannel) {
+	var p struct {
+		Host     string
+		Port     uint32
+		OrigHost string
+		OrigPort uint32
+	}
+	if ssh.Unmarshal(nc.ExtraData(), &p) != nil {
+		nc.Reject(ssh.ConnectionFailed, "bad payload")
+		return
+	}
+	dst, err := net.Dial("tcp", net.JoinHostPort(p.Host, strconv.Itoa(int(p.Port))))
+	if err != nil {
+		nc.Reject(ssh.ConnectionFailed, err.Error())
+		return
+	}
+	ch, reqs, err := nc.Accept()
+	if err != nil {
+		dst.Close()
+		return
+	}
+	go ssh.DiscardRequests(reqs)
+	go func() { io.Copy(ch, dst); ch.Close() }()
+	go func() { io.Copy(dst, ch); dst.Close() }()
+}
+
 func echoShell(ch ssh.Channel) {
 	buf := make([]byte, 1024)
 	for {
@@ -126,14 +180,28 @@ func echoShell(ch ssh.Channel) {
 	}
 }
 
+// startGateway returns the WebSocket URL; httpBase derives the API base from it.
+// Requests act as user "u1" unless X-Test-User / X-Test-Anon say otherwise.
 func startGateway(t *testing.T, allowPrivate bool) string {
 	t.Helper()
 	g := New(config.Config{AllowPrivate: allowPrivate, MaxSessions: 4, MaxUserSessions: 4, DialTimeout: 2 * time.Second},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Hooks{User: func(r *http.Request) (string, bool) { return "u1", r.Header.Get("X-Test-Anon") == "" }})
-	srv := httptest.NewServer(g)
+		Hooks{User: func(r *http.Request) (string, bool) {
+			if u := r.Header.Get("X-Test-User"); u != "" {
+				return u, true
+			}
+			return "u1", r.Header.Get("X-Test-Anon") == ""
+		}})
+	mux := http.NewServeMux()
+	mux.Handle("GET /ws", g)
+	g.SFTPRoutes(mux, func(h http.Handler) http.Handler { return h })
+	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return "ws" + strings.TrimPrefix(srv.URL, "http")
+	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+}
+
+func httpBase(wsURL string) string {
+	return "http" + strings.TrimSuffix(strings.TrimPrefix(wsURL, "ws"), "/ws")
 }
 
 type client struct {
