@@ -18,6 +18,7 @@ services:
     # Not published: only Caddy can reach it.
     expose:
       - "7022"
+      - "7100-7109"
 
   caddy:
     image: caddy:2.10-alpine
@@ -29,6 +30,8 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"
+      # port-forwarding previews (HTTPS via Caddy)
+      - "7100-7109:7100-7109"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

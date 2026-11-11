@@ -38,6 +38,7 @@ export interface ConnectInitial {
   identityId?: string
   jumpHostId?: string
   startupSnippetId?: string
+  agent?: boolean
   /** Editing a saved host that already has inline credentials. */
   hasCreds?: boolean
 }
@@ -60,6 +61,7 @@ export interface ConnectResult {
   group?: string
   jumpHostId?: string
   startupSnippetId?: string
+  agent?: boolean
 }
 
 export interface VaultChoices {
@@ -104,7 +106,8 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
   const [group, setGroup] = useState(initial.group ?? '')
   const [jumpHostId, setJumpHostId] = useState(initial.jumpHostId ?? '')
   const [startupSnippetId, setStartupSnippetId] = useState(initial.startupSnippetId ?? '')
-  const [more, setMore] = useState(!!(initial.group || initial.jumpHostId || initial.startupSnippetId))
+  const [agent, setAgent] = useState(!!initial.agent)
+  const [more, setMore] = useState(!!(initial.group || initial.jumpHostId || initial.startupSnippetId || initial.agent))
   const [error, setError] = useState('')
   const [joined, setJoined] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -142,7 +145,7 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
       host: parsed.host, port: finalPort, user: finalUser, method: source === 'password' ? 'password' : 'key', auth, ref,
       save, storeCreds: saving ? given : save && storeCreds, clearCreds,
       label: label.trim(), color, group: group.trim() || undefined,
-      jumpHostId: jumpHostId || undefined, startupSnippetId: startupSnippetId || undefined,
+      jumpHostId: jumpHostId || undefined, startupSnippetId: startupSnippetId || undefined, agent,
     })
   }
 
@@ -266,6 +269,12 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
                 <option value="">Direct connection</option>
                 {jumpChoices.map((h) => <option key={h.id} value={h.id}>{h.label || h.host} — {h.user}@{h.host}</option>)}
               </select>
+            </label>
+          )}
+          {source !== 'password' && (
+            <label className="check">
+              <input type="checkbox" checked={agent} onChange={(e) => setAgent(e.target.checked)} />
+              <span>Forward SSH agent <em className="hint">(lets the server use this key, e.g. for git; only for servers you trust)</em></span>
             </label>
           )}
           {save && (

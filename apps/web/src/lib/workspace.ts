@@ -1,13 +1,14 @@
 import type { Target } from './protocol'
 
-export type PhaseKind = 'connecting' | 'hostkey' | 'ready' | 'ended' | 'lost' | 'error'
+export type PhaseKind = 'connecting' | 'hostkey' | 'ready' | 'resuming' | 'ended' | 'lost' | 'error'
 
 export interface SessionMeta {
   phase: PhaseKind
   fingerprint?: string
   algo?: string
-  /** Handle for /api/sftp while the session is connected. */
+  /** Handle for /api/sftp and forwarding while the session is connected. */
   sftp?: string
+  recording?: boolean
   cols: number
   rows: number
 }
@@ -43,7 +44,8 @@ export interface WorkspaceState {
 }
 
 export type Action =
-  | { type: 'open'; target: Target; title: string; color: string }
+  /** `split`: open beside an existing window, sharing its area (right or below). */
+  | { type: 'open'; target: Target; title: string; color: string; split?: { id: string; dir: 'right' | 'down' } }
   | { type: 'close'; id: string }
   | { type: 'focus'; id: string }
   | { type: 'setRect'; id: string; rect: Rect }
@@ -104,7 +106,16 @@ export function workspaceReducer(s: WorkspaceState, a: Action): WorkspaceState {
         z,
         meta: { phase: 'connecting', cols: 0, rows: 0 },
       }
-      return { ...s, z, sessions: [...s.sessions, session], focusedId: session.id }
+      const base = a.split && s.sessions.find((x) => x.id === a.split!.id)
+      if (!base) return { ...s, z, sessions: [...s.sessions, session], focusedId: session.id }
+      // Split the base window's area in two (the whole workspace if it was maximized).
+      const r = base.maximized ? { x: 0, y: 0, w: s.area.w, h: s.area.h } : base.rect
+      const half = a.split!.dir === 'right'
+        ? [{ ...r, w: (r.w - GAP) / 2 }, { ...r, x: r.x + (r.w + GAP) / 2, w: (r.w - GAP) / 2 }]
+        : [{ ...r, h: (r.h - GAP) / 2 }, { ...r, y: r.y + (r.h + GAP) / 2, h: (r.h - GAP) / 2 }]
+      session.rect = clampRect(half[1], s.area)
+      const sessions = s.sessions.map((x) => (x.id === base.id ? { ...x, maximized: false, minimized: false, rect: clampRect(half[0], s.area) } : x))
+      return { ...s, z, sessions: [...sessions, session], focusedId: session.id }
     }
     case 'close': {
       const sessions = s.sessions.filter((x) => x.id !== a.id)

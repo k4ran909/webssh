@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -55,6 +56,7 @@ func run(log *slog.Logger) error {
 	a.Routes(mux)
 	mux.Handle("GET /ws/terminal", a.RequireUser(gw))
 	gw.SFTPRoutes(mux, a.RequireUser)
+	gw.ForwardRoutes(mux, a.RequireUser)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 	mux.Handle("GET /", web.Handler())
 
@@ -65,10 +67,18 @@ func run(log *slog.Logger) error {
 	}
 	go func() {
 		<-ctx.Done()
+		gw.Shutdown()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(sctx)
 	}()
+
+	if len(cfg.ForwardPorts) > 0 {
+		host, _, _ := net.SplitHostPort(cfg.Addr)
+		if err := gw.ServePreviews(ctx, host); err != nil {
+			log.Warn("port forwarding disabled", "err", err)
+		}
+	}
 
 	if !config.IsLoopback(cfg.Addr) && !cfg.TrustProxy {
 		log.Warn("listening on a public address without a TLS proxy; put Caddy (deploy/) in front and set WEBSSH_TRUST_PROXY=1")

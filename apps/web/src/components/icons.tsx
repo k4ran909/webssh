@@ -53,6 +53,14 @@ const PATHS = {
   cursor: 'M9 4.5h6M9 19.5h6M12 4.5v15',
   import: 'M12 3.5v10M8 9.5l4 4 4-4M5 14.5v4a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4',
   jump: 'M5 18 12 6l7 12M8.5 13h7',
+  more: 'M6 12h.01M12 12h.01M18 12h.01',
+  split: 'M4.5 4.5h15v15h-15zM12 4.5v15',
+  splitDown: 'M4.5 4.5h15v15h-15zM4.5 12h15',
+  forward: 'M4 12h11M11 7l5 5-5 5M20 5v14',
+  record: 'M12 7a5 5 0 1 0 0 10a5 5 0 1 0 0-10',
+  pause: 'M8 5v14M16 5v14',
+  external: 'M14 4.5h5.5V10M19.5 4.5 11 13M10 6H5.5v12.5H18V14',
+  keyboard: 'M3.5 6.5h17v11h-17zM7 10h.01M10 10h.01M13 10h.01M16 10h.01M8 14h8',
   command:'M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z',
 }
 

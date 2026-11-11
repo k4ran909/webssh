@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"errors"
 	"regexp"
 	"strings"
@@ -8,12 +9,14 @@ import (
 
 // WebSocket protocol, one socket per terminal session.
 //
-//	client → server  text   {"t":"connect", host, port, user, auth, knownHostKey, jump:[hop…], cols, rows, term}
+//	client → server  text   {"t":"connect", host, port, user, auth, knownHostKey, jump:[hop…], agent, cols, rows, term}
+//	                 text   {"t":"resume", token, offset, cols, rows}   (first message on a new socket)
 //	                 text   {"t":"resize", cols, rows}
 //	                 text   {"t":"hostkey-accept"} | {"t":"hostkey-reject"}
 //	                 binary keystrokes / pasted bytes
 //	server → client  text   {"t":"hostkey", status:"new"|"changed", host, port, fingerprint, algo}
-//	                 text   {"t":"ready", fingerprint, algo, sftp}
+//	                 text   {"t":"ready", fingerprint, algo, sftp, resume}
+//	                 text   {"t":"resumed", offset, gap, sftp}   then the missed output from offset
 //	                 text   {"t":"exit", exitCode}
 //	                 text   {"t":"error", code, msg}
 //	                 binary PTY output
@@ -29,10 +32,16 @@ type clientMsg struct {
 	Auth         *authInfo `json:"auth,omitempty"`
 	KnownHostKey string    `json:"knownHostKey,omitempty"`
 	Jump         []hop     `json:"jump,omitempty"`
+	Agent        bool      `json:"agent,omitempty"`
 	Cols         int       `json:"cols,omitempty"`
 	Rows         int       `json:"rows,omitempty"`
 	Term         string    `json:"term,omitempty"`
+	// resume: token from "ready", and how many output bytes arrived since "ready".
+	Token  string `json:"token,omitempty"`
+	Offset int64  `json:"offset,omitempty"`
 }
+
+func decodeMsg(b []byte, m *clientMsg) bool { return json.Unmarshal(b, m) == nil }
 
 type hop struct {
 	Host         string    `json:"host"`
@@ -59,6 +68,9 @@ type serverMsg struct {
 	Host        string `json:"host,omitempty"`
 	Port        int    `json:"port,omitempty"`
 	SFTP        string `json:"sftp,omitempty"`
+	Resume      string `json:"resume,omitempty"`
+	Offset      int64  `json:"offset,omitempty"`
+	Gap         bool   `json:"gap,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
 	Algo        string `json:"algo,omitempty"`
 	ExitCode    *int   `json:"exitCode,omitempty"`
@@ -79,6 +91,7 @@ const (
 	codeKeyPassphrase   = "KEY_NEEDS_PASSPHRASE"
 	codeHandshake       = "HANDSHAKE_FAILED"
 	codeSession         = "SESSION_FAILED"
+	codeResumeGone      = "RESUME_GONE"
 )
 
 // gwError is an error the browser is allowed to see.

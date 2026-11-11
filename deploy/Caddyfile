@@ -7,3 +7,12 @@
 		flush_interval -1
 	}
 }
+
+# Port-forwarding previews: one HTTPS port per forward, same certificate.
+# Keep this list in sync with WEBSSH_FORWARD_PORTS and the published ports.
+{$WEBSSH_DOMAIN}:7100, {$WEBSSH_DOMAIN}:7101, {$WEBSSH_DOMAIN}:7102, {$WEBSSH_DOMAIN}:7103, {$WEBSSH_DOMAIN}:7104,
+{$WEBSSH_DOMAIN}:7105, {$WEBSSH_DOMAIN}:7106, {$WEBSSH_DOMAIN}:7107, {$WEBSSH_DOMAIN}:7108, {$WEBSSH_DOMAIN}:7109 {
+	reverse_proxy webssh:{http.request.port} {
+		flush_interval -1
+	}
+}

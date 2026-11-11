@@ -7,7 +7,8 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
 import { algoLabel, gatewayURL, type ClientMsg, type ServerMsg, type Target } from '../lib/protocol'
 import { forgetKnownHost, getKnownHost, saveKnownHost } from '../lib/vault'
-import { liveSessions, readySessions } from '../lib/live'
+import { applyModifiers, liveSessions, readySessions } from '../lib/live'
+import { CastRecorder } from '../lib/cast'
 import type { SessionMeta } from '../lib/workspace'
 import { inkTheme } from '../lib/xtermTheme'
 import { Icon } from './icons'
@@ -16,12 +17,15 @@ type Phase =
   | { kind: 'connecting' }
   | { kind: 'hostkey'; host: string; port: number; fingerprint: string; algo: string; via: boolean }
   | { kind: 'ready'; fingerprint: string; algo: string }
+  | { kind: 'resuming'; attempt: number }
   | { kind: 'ended'; exitCode: number }
-  | { kind: 'lost' }
+  | { kind: 'lost'; why?: string }
   | { kind: 'error'; code: string; msg: string; changed?: { host: string; port: number; fingerprint: string } }
 
 const DIM = '\x1b[90m'
 const RESET = '\x1b[0m'
+/** Keep trying a little longer than the gateway's default 5-minute resume window. */
+const RESUME_GIVE_UP_MS = 6 * 60_000
 
 const SEARCH_OPTS: ISearchOptions = {
   incremental: true,
@@ -42,6 +46,7 @@ export function isAppShortcut(e: KeyboardEvent) {
 
 interface Props {
   id: string
+  title: string
   target: Target
   fontSize: number
   broadcast: boolean
@@ -51,7 +56,7 @@ interface Props {
   onEdit: (id: string) => void
 }
 
-export const TerminalView = memo(function TerminalView({ id, target, fontSize, broadcast, onMeta, onClose, onReconnect, onEdit }: Props) {
+export const TerminalView = memo(function TerminalView({ id, title, target, fontSize, broadcast, onMeta, onClose, onReconnect, onEdit }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<() => void>(() => {})
@@ -60,8 +65,10 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
   const broadcastRef = useRef(broadcast)
   const fontRef = useRef(fontSize)
   const metaRef = useRef(onMeta)
+  const titleRef = useRef(title)
   broadcastRef.current = broadcast
   metaRef.current = onMeta
+  titleRef.current = title
 
   const [phase, setPhaseState] = useState<Phase>({ kind: 'connecting' })
   const [search, setSearch] = useState<{ open: boolean; q: string; idx: number; count: number }>({ open: false, q: '', idx: -1, count: 0 })
@@ -74,6 +81,14 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
     let finished = false
     let ws: WebSocket | null = null
     let changed: { host: string; port: number; fingerprint: string } | undefined
+    // Resume state: token from "ready" and output bytes received since then.
+    let resumeToken = ''
+    let received = 0
+    let lastReady: { fingerprint: string; algo: string } | null = null
+    let retryTimer = 0
+    let lostAt = 0
+    let attempt = 0
+    let recorder: CastRecorder | null = null
     const enc = new TextEncoder()
 
     const setPhase = (p: Phase, extra: Partial<SessionMeta> = {}) => {
@@ -123,7 +138,127 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
       write: (data) => ready && send(data),
       focus: () => term.focus(),
       openSearch: () => setSearch((s) => ({ ...s, open: true })),
+      startRecording: () => {
+        recorder = new CastRecorder(term.cols, term.rows, titleRef.current)
+        metaRef.current(id, { recording: true })
+      },
+      stopRecording: () => {
+        const r = recorder
+        recorder = null
+        metaRef.current(id, { recording: false })
+        return r?.finish() ?? null
+      },
     })
+
+    const scheduleResume = () => {
+      if (disposed || finished) return
+      if (Date.now() - lostAt > RESUME_GIVE_UP_MS) {
+        finished = true
+        note('Could not reconnect to the gateway.')
+        setPhase({ kind: 'lost' })
+        return
+      }
+      attempt++
+      setPhase({ kind: 'resuming', attempt })
+      clearTimeout(retryTimer)
+      retryTimer = window.setTimeout(() => {
+        openSocket({ t: 'resume', token: resumeToken, offset: received, cols: term.cols, rows: term.rows })
+      }, Math.min(10_000, 500 * 2 ** Math.min(attempt - 1, 5)))
+    }
+
+    // Retry right away when the network comes back.
+    const onOnline = () => {
+      if (lostAt && !ready && !finished) {
+        clearTimeout(retryTimer)
+        openSocket({ t: 'resume', token: resumeToken, offset: received, cols: term.cols, rows: term.rows })
+      }
+    }
+    window.addEventListener('online', onOnline)
+
+    const openSocket = (first: ClientMsg) => {
+      if (disposed) return
+      const sock = new WebSocket(gatewayURL())
+      ws = sock
+      sock.binaryType = 'arraybuffer'
+      sock.onopen = () => sock.send(JSON.stringify(first))
+      sock.onmessage = (e) => {
+        if (ws !== sock) return
+        if (typeof e.data !== 'string') {
+          const bytes = new Uint8Array(e.data as ArrayBuffer)
+          if (ready) {
+            received += bytes.byteLength
+            recorder?.output(bytes)
+          }
+          term.write(bytes)
+          return
+        }
+        const m = JSON.parse(e.data) as ServerMsg
+        switch (m.t) {
+          case 'hostkey': {
+            const isJump = !(m.host === target.host && m.port === target.port)
+            if (m.status === 'new') setPhase({ kind: 'hostkey', host: m.host, port: m.port, fingerprint: m.fingerprint, algo: m.algo, via: isJump })
+            else changed = { host: m.host, port: m.port, fingerprint: m.fingerprint }
+            break
+          }
+          case 'ready':
+            ready = true
+            received = 0
+            resumeToken = m.resume ?? ''
+            lastReady = { fingerprint: m.fingerprint, algo: m.algo }
+            note(`\x1b[32m✓${DIM} ${algoLabel(m.algo)} host key verified · authenticated as ${target.user}${target.agent ? ' · agent forwarded' : ''}`)
+            term.write('\r\n')
+            // The PTY was sized at connect time; catch up with any resize since.
+            sendRef.current({ t: 'resize', cols: term.cols, rows: term.rows })
+            setPhase({ kind: 'ready', ...lastReady }, { sftp: m.sftp })
+            term.focus()
+            // Run-on-connect snippet, once the shell has had a moment to print its prompt.
+            if (target.startup) setTimeout(() => ready && send(enc.encode(target.startup + '\r')), 400)
+            break
+          case 'resumed':
+            ready = true
+            lostAt = 0
+            attempt = 0
+            if (m.gap) note('\r\n(Some output was lost while disconnected.)')
+            received = m.offset ?? 0
+            setPhase({ kind: 'ready', ...lastReady! }, { sftp: m.sftp })
+            break
+          case 'exit':
+            finished = true
+            ready = false
+            term.write('\r\n')
+            // -1: the server dropped the channel without reporting a status
+            note(m.exitCode < 0 ? 'Connection closed by the server.' : `Session ended (exit ${m.exitCode}).`)
+            setPhase({ kind: 'ended', exitCode: m.exitCode }, { sftp: undefined })
+            break
+          case 'error':
+            finished = true
+            ready = false
+            if (m.code === 'RESUME_GONE') {
+              note('\r\nThe session ended while you were disconnected.')
+              setPhase({ kind: 'lost', why: 'Session ended while disconnected' }, { sftp: undefined })
+              break
+            }
+            term.write(`\x1b[31m✕ ${m.msg}${RESET}\r\n`)
+            setPhase({ kind: 'error', code: m.code, msg: m.msg, changed })
+            break
+        }
+      }
+      sock.onclose = () => {
+        if (ws !== sock || finished || disposed) return
+        if (resumeToken) {
+          // The SSH session is still alive on the gateway: reattach.
+          if (ready) {
+            ready = false
+            lostAt = Date.now()
+            note('\r\nConnection to the gateway dropped. Reconnecting…')
+          }
+          scheduleResume()
+          return
+        }
+        note('Lost connection to the gateway.')
+        setPhase({ kind: 'lost' })
+      }
+    }
 
     const start = async () => {
       // xterm measures glyphs on open, so the font must be loaded first.
@@ -141,70 +276,21 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
       metaRef.current(id, { cols: term.cols, rows: term.rows })
       const via = target.jump?.map((j) => j.label || j.host).join(' → ')
       note(`Connecting to ${target.host}:${target.port}${via ? ` via ${via}` : ''} …`)
-
-      ws = new WebSocket(gatewayURL())
-      ws.binaryType = 'arraybuffer'
-      ws.onopen = () =>
-        sendRef.current({
-          t: 'connect',
-          host: target.host,
-          port: target.port,
-          user: target.user,
-          auth: target.auth,
-          knownHostKey: getKnownHost(target.host, target.port) ?? '',
-          jump: target.jump?.map((j) => ({
-            host: j.host, port: j.port, user: j.user, auth: j.auth, knownHostKey: getKnownHost(j.host, j.port) ?? '',
-          })),
-          cols: term.cols,
-          rows: term.rows,
-          term: 'xterm-256color',
-        })
-      ws.onmessage = (e) => {
-        if (typeof e.data !== 'string') {
-          term.write(new Uint8Array(e.data as ArrayBuffer))
-          return
-        }
-        const m = JSON.parse(e.data) as ServerMsg
-        switch (m.t) {
-          case 'hostkey': {
-            const isJump = !(m.host === target.host && m.port === target.port)
-            if (m.status === 'new') setPhase({ kind: 'hostkey', host: m.host, port: m.port, fingerprint: m.fingerprint, algo: m.algo, via: isJump })
-            else changed = { host: m.host, port: m.port, fingerprint: m.fingerprint }
-            break
-          }
-          case 'ready':
-            ready = true
-            note(`\x1b[32m✓${DIM} ${algoLabel(m.algo)} host key verified · authenticated as ${target.user}`)
-            term.write('\r\n')
-            // The PTY was sized at connect time; catch up with any resize since.
-            sendRef.current({ t: 'resize', cols: term.cols, rows: term.rows })
-            setPhase({ kind: 'ready', fingerprint: m.fingerprint, algo: m.algo }, { sftp: m.sftp })
-            term.focus()
-            // Run-on-connect snippet, once the shell has had a moment to print its prompt.
-            if (target.startup) setTimeout(() => ready && send(enc.encode(target.startup + '\r')), 400)
-            break
-          case 'exit':
-            finished = true
-            ready = false
-            term.write('\r\n')
-            // -1: the server dropped the channel without reporting a status
-            note(m.exitCode < 0 ? 'Connection closed by the server.' : `Session ended (exit ${m.exitCode}).`)
-            setPhase({ kind: 'ended', exitCode: m.exitCode })
-            break
-          case 'error':
-            finished = true
-            ready = false
-            term.write(`\x1b[31m✕ ${m.msg}${RESET}\r\n`)
-            setPhase({ kind: 'error', code: m.code, msg: m.msg, changed })
-            break
-        }
-      }
-      ws.onclose = () => {
-        if (finished || disposed) return
-        ready = false
-        note('Lost connection to the gateway.')
-        setPhase({ kind: 'lost' })
-      }
+      openSocket({
+        t: 'connect',
+        host: target.host,
+        port: target.port,
+        user: target.user,
+        auth: target.auth,
+        knownHostKey: getKnownHost(target.host, target.port) ?? '',
+        jump: target.jump?.map((j) => ({
+          host: j.host, port: j.port, user: j.user, auth: j.auth, knownHostKey: getKnownHost(j.host, j.port) ?? '',
+        })),
+        agent: target.agent || undefined,
+        cols: term.cols,
+        rows: term.rows,
+        term: 'xterm-256color',
+      })
     }
     start()
 
@@ -212,13 +298,14 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
 
     const subs = [
       term.onData((d) => {
-        const bytes = enc.encode(d)
+        const bytes = enc.encode(applyModifiers(d))
         if (broadcastRef.current) readySessions().forEach((s) => s.write(bytes))
         else if (ready) send(bytes)
       }),
       term.onBinary((d) => ready && send(Uint8Array.from(d, (c) => c.charCodeAt(0) & 0xff))),
       term.onResize(({ cols, rows }) => {
         metaRef.current(id, { cols, rows })
+        recorder?.resize(cols, rows)
         if (ready) sendRef.current({ t: 'resize', cols, rows })
       }),
       searchAddon.onDidChangeResults(({ resultIndex, resultCount }) =>
@@ -243,8 +330,10 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
 
     return () => {
       disposed = true
+      clearTimeout(retryTimer)
       cancelAnimationFrame(raf)
       ro.disconnect()
+      window.removeEventListener('online', onOnline)
       el.removeEventListener('mouseup', copySelection)
       subs.forEach((s) => s.dispose())
       liveSessions.delete(id)
@@ -324,6 +413,12 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
         </div>
       )}
 
+      {phase.kind === 'resuming' && (
+        <div className="resume-pill" role="status">
+          <span className="dot busy" /> Reconnecting{phase.attempt > 1 ? ` · attempt ${phase.attempt}` : ''}…
+        </div>
+      )}
+
       {phase.kind === 'hostkey' && (
         <div className="card" role="dialog" aria-label="New host key">
           <h4><Icon name="shield" /> New host key{phase.via ? ' · jump host' : ''}</h4>
@@ -363,7 +458,7 @@ export const TerminalView = memo(function TerminalView({ id, target, fontSize, b
       {(phase.kind === 'ended' || phase.kind === 'lost') && (
         <div className="endbar">
           <span>
-            {phase.kind === 'lost' ? 'Connection lost'
+            {phase.kind === 'lost' ? (phase.why ?? 'Connection lost')
               : phase.exitCode < 0 ? 'Closed by server'
               : `Session ended · exit ${phase.exitCode}`}
           </span>

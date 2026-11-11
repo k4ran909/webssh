@@ -32,6 +32,36 @@ type Config struct {
 	AllowedOrigins []string
 	SessionTTL     time.Duration
 	DialTimeout    time.Duration
+	// ResumeWindow is how long an SSH session waits for its browser after
+	// the WebSocket drops. 0 closes it immediately.
+	ResumeWindow time.Duration
+	// ForwardPorts are the preview ports for HTTP port forwarding (one forward each).
+	ForwardPorts []int
+}
+
+// parsePorts reads "7100-7109,7200" style lists.
+func parsePorts(s string) ([]int, error) {
+	var out []int
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		lo, hi, isRange := strings.Cut(part, "-")
+		a, err1 := strconv.Atoi(strings.TrimSpace(lo))
+		b := a
+		var err2 error
+		if isRange {
+			b, err2 = strconv.Atoi(strings.TrimSpace(hi))
+		}
+		if err1 != nil || err2 != nil || a < 1 || b > 65535 || b < a || b-a > 200 {
+			return nil, fmt.Errorf("bad port range %q", part)
+		}
+		for p := a; p <= b; p++ {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 func FromEnv() (Config, error) {
@@ -73,6 +103,17 @@ func FromEnv() (Config, error) {
 	}
 	if c.DataDir == "" {
 		return c, errors.New("WEBSSH_DATA_DIR must not be empty")
+	}
+	c.ResumeWindow = 5 * time.Minute
+	if v := os.Getenv("WEBSSH_RESUME_MINUTES"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > 24*60 {
+			return c, errors.New("WEBSSH_RESUME_MINUTES must be 0–1440")
+		}
+		c.ResumeWindow = time.Duration(n) * time.Minute
+	}
+	if c.ForwardPorts, err = parsePorts(getenv("WEBSSH_FORWARD_PORTS", "7100-7109")); err != nil {
+		return c, fmt.Errorf("WEBSSH_FORWARD_PORTS: %w", err)
 	}
 	return c, nil
 }

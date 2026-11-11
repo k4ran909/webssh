@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { Auth, Target } from './lib/protocol'
 import type { SignedIn } from './lib/api'
 import { credentialCache, credKey, liveSessions, readySessions, sendText } from './lib/live'
@@ -17,6 +17,10 @@ import { Sidebar } from './components/Sidebar'
 import { SnippetsPanel } from './components/SnippetsPanel'
 import { useTheme } from './components/ThemeToggle'
 import { Workspace } from './components/Workspace'
+import type { WindowAction } from './components/WindowFrame'
+import { ForwardDialog, ForwardsPanel, useForwards } from './components/Forwarding'
+import { KeysBar } from './components/KeysBar'
+import { downloadText, parseCast, type Cast } from './lib/cast'
 import { Icon, Logo } from './components/icons'
 
 type Dialog =
@@ -36,6 +40,9 @@ function useMediaQuery(q: string) {
 
 const sameEndpoint = (h: { host: string; port: number; user: string }, t: { host: string; port: number; user: string }) =>
   h.host.toLowerCase() === t.host.toLowerCase() && h.port === t.port && h.user === t.user
+
+// xterm-based; loaded only when a recording is opened.
+const CastPlayer = lazy(() => import('./components/CastPlayer'))
 
 const hostInitial = (h: SavedHost): ConnectInitial => ({ ...h, hasCreds: !!(h.password || h.key) })
 
@@ -69,18 +76,25 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
   const [importing, setImporting] = useState(false)
   const [notice, setNotice] = useState('')
   const [palette, setPalette] = useState(false)
-  const [pop, setPop] = useState<'snippets' | 'settings' | null>(null)
+  const [pop, setPop] = useState<'snippets' | 'settings' | 'forwards' | null>(null)
+  const [forwarding, setForwarding] = useState<string | null>(null)
+  const [playback, setPlayback] = useState<{ cast: Cast; name: string } | null>(null)
+  const castInput = useRef<HTMLInputElement>(null)
+  const fwd = useForwards()
   const theme = useTheme()
   const narrow = useMediaQuery('(max-width: 760px)')
+  const coarse = useMediaQuery('(pointer: coarse)')
   const layout = narrow ? 'tabs' : prefs.layout
   const showSidebar = prefs.sidebar && !narrow
+  const layoutRef = useRef(layout)
+  layoutRef.current = layout
   const [mobileSidebar, setMobileSidebar] = useState(false)
 
   useEffect(() => savePrefs(prefs), [prefs])
   const setPref = useCallback(<K extends keyof Prefs>(k: K, v: Prefs[K]) => setPrefs((p) => ({ ...p, [k]: v })), [setPrefs])
 
   // ── sessions ──
-  const open = useCallback((target: Target, title?: string, color?: string) => {
+  const open = useCallback((target: Target, title?: string, color?: string, split?: { id: string; dir: 'right' | 'down' }) => {
     credentialCache.set(credKey(target.host, target.port, target.user), target.auth)
     const saved = hostsRef.current.find((h) => sameEndpoint(h, target))
     dispatch({
@@ -88,6 +102,7 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
       target,
       title: title ?? (saved?.label || sessionLabel(target)),
       color: color ?? saved?.color ?? HOST_COLORS[0],
+      split,
     })
   }, [])
 
@@ -111,10 +126,28 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
   const onMeta = useCallback((id: string, meta: Partial<SessionMeta>) => dispatch({ type: 'meta', id, meta }), [])
   const onClose = useCallback((id: string) => dispatch({ type: 'close', id }), [])
   const onReconnect = useCallback((id: string) => dispatch({ type: 'reconnect', id }), [])
-  const onDuplicate = useCallback((id: string) => {
+  const onAction = useCallback((id: string, action: WindowAction) => {
     const s = wsRef.current.sessions.find((x) => x.id === id)
-    if (s) open(s.target, s.title, s.color)
-  }, [open])
+    if (!s) return
+    switch (action) {
+      case 'duplicate':
+        return open(s.target, s.title, s.color)
+      case 'split-right':
+      case 'split-down':
+        if (layoutRef.current === 'tabs') setPref('layout', 'windows')
+        return open(s.target, s.title, s.color, { id, dir: action === 'split-right' ? 'right' : 'down' })
+      case 'forward':
+        return setForwarding(id)
+      case 'record': {
+        const live = liveSessions.get(id)
+        if (!live) return
+        if (!s.meta.recording) return live.startRecording()
+        const cast = live.stopRecording()
+        if (cast) downloadText(`${s.title.replace(/[^\w.-]+/g, '_')}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.cast`, cast)
+        setNotice('Recording saved to your downloads. Play it back from the command palette.')
+      }
+    }
+  }, [open, setPref])
   const onSearch = useCallback((id: string) => liveSessions.get(id)?.openSearch(), [])
   const onEdit = useCallback((id: string) => {
     const s = wsRef.current.sessions.find((x) => x.id === id)
@@ -132,7 +165,7 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
     const item: HostItem = {
       kind: 'host', label: r.label || existing?.label || '', color: r.color,
       host: r.host, port: r.port, user: r.user, method: r.method,
-      group: r.group, jumpHostId: r.jumpHostId, startupSnippetId: r.startupSnippetId,
+      group: r.group, jumpHostId: r.jumpHostId, startupSnippetId: r.startupSnippetId, agent: r.agent || undefined,
     }
     if (r.ref) {
       if (r.ref.kind === 'identity') item.identityId = r.ref.id
@@ -181,6 +214,7 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
       ...(existing ?? { kind: 'host', id: savedId ?? 'adhoc', label: r.label, color: r.color, method: r.method }),
       host: r.host, port: r.port, user: creds.user,
       jumpHostId: r.jumpHostId ?? existing?.jumpHostId,
+      agent: r.agent ?? existing?.agent,
       startupSnippetId: r.startupSnippetId ?? existing?.startupSnippetId,
     } as SavedHost
     const res = resolveHost(asHost, viewRef.current, creds)
@@ -280,6 +314,8 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
       { id: 'a-keychain', section: 'Actions', label: 'Open keychain', hint: 'keys & identities', icon: <Icon name="key" size={14} />, run: () => setKeychain(true) },
       { id: 'a-import', section: 'Actions', label: 'Import ~/.ssh/config', icon: <Icon name="import" size={14} />, run: () => setImporting(true) },
       ...(ws.focusedId ? [{ id: 'a-files', section: 'Actions', label: 'Toggle files (SFTP)', icon: <Icon name="folder" size={14} />, run: () => dispatch({ type: 'toggleFiles', id: ws.focusedId! }) }] : []),
+      { id: 'a-play', section: 'Actions', label: 'Play a recording…', hint: '.cast', icon: <Icon name="play" size={14} />, run: () => castInput.current?.click() },
+      { id: 'a-fwd', section: 'Actions', label: 'Port forwarding', icon: <Icon name="forward" size={14} />, run: () => { fwd.refresh(); setPop('forwards') } },
       { id: 'a-account', section: 'Account', label: 'Account & security', hint: session.user.email, icon: <Icon name="user" size={14} />, run: () => setAccount(true) },
       { id: 'a-lock', section: 'Account', label: 'Lock vault', icon: <Icon name="lock" size={14} />, run: onLock },
       { id: 'a-logout', section: 'Account', label: 'Sign out', icon: <Icon name="logout" size={14} />, run: onLogout },
@@ -328,6 +364,18 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
         >
           <Icon name="broadcast" />
         </button>
+        <span className="anchor">
+          <button className="icon-btn" data-popover-anchor title="Port forwarding" aria-label="Port forwarding" aria-expanded={pop === 'forwards'}
+            onClick={() => { fwd.refresh(); setPop((p) => (p === 'forwards' ? null : 'forwards')) }}>
+            <Icon name="forward" />
+            {fwd.forwards.length > 0 && <span className="badge">{fwd.forwards.length}</span>}
+          </button>
+          {pop === 'forwards' && (
+            <Popover onClose={() => setPop(null)} className="right">
+              <ForwardsPanel forwards={fwd.forwards} available={fwd.available} sessions={ws.sessions} onChange={fwd.refresh} />
+            </Popover>
+          )}
+        </span>
         <span className="anchor">
           <button className="icon-btn" data-popover-anchor title="Snippets" aria-label="Snippets" aria-expanded={pop === 'snippets'} onClick={() => setPop((p) => (p === 'snippets' ? null : 'snippets'))}><Icon name="bolt" /></button>
           {pop === 'snippets' && (
@@ -411,11 +459,12 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
             onClose={onClose}
             onReconnect={onReconnect}
             onEdit={onEdit}
-            onDuplicate={onDuplicate}
+            onAction={onAction}
             onSearch={onSearch}
             onNew={newConnection}
             onOpenHost={openHost}
           />
+          {(narrow || coarse) && ws.focusedId && <KeysBar sessionId={ws.focusedId} />}
           <Dock ws={ws} showTasks={layout === 'windows'} dispatch={dispatch} />
         </div>
       </div>
@@ -466,6 +515,27 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
       {importing && (
         <ImportConfig hosts={hosts} onClose={() => setImporting(false)}
           onDone={(n) => { setImporting(false); setNotice(`Imported ${n} host${n === 1 ? '' : 's'}.`) }} />
+      )}
+
+      {forwarding && ws.sessions.some((s) => s.id === forwarding) && (
+        <ForwardDialog session={ws.sessions.find((s) => s.id === forwarding)!} onClose={() => setForwarding(null)} onCreated={fwd.refresh} />
+      )}
+      <input ref={castInput} type="file" accept=".cast,application/x-asciicast,application/json" hidden
+        onChange={async (e) => {
+          const f = e.target.files?.[0]
+          e.target.value = ''
+          if (!f) return
+          if (f.size > 50 << 20) return setNotice('That recording is too large to play here (over 50 MB).')
+          try {
+            setPlayback({ cast: parseCast(await f.text()), name: f.name })
+          } catch (err) {
+            setNotice(err instanceof Error ? err.message : 'Could not read that recording.')
+          }
+        }} />
+      {playback && (
+        <Suspense fallback={null}>
+          <CastPlayer cast={playback.cast} name={playback.name} onClose={() => setPlayback(null)} />
+        </Suspense>
       )}
 
       {palette && <CommandPalette items={paletteItems} onClose={() => setPalette(false)} />}

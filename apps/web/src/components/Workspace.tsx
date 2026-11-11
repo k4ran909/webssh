@@ -3,7 +3,7 @@ import type { Action, SessionMeta, WorkspaceState } from '../lib/workspace'
 import type { Layout } from '../lib/storage'
 import type { SavedHost } from '../lib/vault'
 import { SftpPanel } from './SftpPanel'
-import { WindowFrame } from './WindowFrame'
+import { WindowFrame, type WindowAction } from './WindowFrame'
 import { Icon, Logo } from './icons'
 
 // xterm.js is most of the bundle; load it with the first session.
@@ -20,7 +20,7 @@ interface Props {
   onClose: (id: string) => void
   onReconnect: (id: string) => void
   onEdit: (id: string) => void
-  onDuplicate: (id: string) => void
+  onAction: (id: string, action: WindowAction) => void
   onSearch: (id: string) => void
   onNew: () => void
   onOpenHost: (h: SavedHost) => void
@@ -52,7 +52,7 @@ export function Workspace(p: Props) {
               onAuxClick={(e) => e.button === 1 && p.onClose(s.id)}
             >
               <span className="swatch" style={{ background: s.color }} />
-              <span className={`dot ${s.meta.phase === 'ready' ? 'ok' : s.meta.phase === 'error' ? 'bad' : s.meta.phase === 'connecting' || s.meta.phase === 'hostkey' ? 'busy' : ''}`} />
+              <span className={`dot ${s.meta.phase === 'ready' ? 'ok' : s.meta.phase === 'error' ? 'bad' : s.meta.phase === 'connecting' || s.meta.phase === 'hostkey' || s.meta.phase === 'resuming' ? 'busy' : ''}`} />
               {s.title}
               <span className="x" role="button" aria-label="Close tab" onClick={(e) => { e.stopPropagation(); p.onClose(s.id) }}>
                 <Icon name="x" size={12} />
@@ -73,7 +73,7 @@ export function Workspace(p: Props) {
             broadcast={p.broadcast}
             area={ws.area}
             dispatch={dispatch}
-            onDuplicate={p.onDuplicate}
+            onAction={p.onAction}
             onSearch={p.onSearch}
           >
             <div className="term-cell">
@@ -81,6 +81,7 @@ export function Workspace(p: Props) {
                 <TerminalView
                   key={s.attempt}
                   id={s.id}
+                  title={s.title}
                   target={s.target}
                   fontSize={p.fontSize}
                   broadcast={p.broadcast}

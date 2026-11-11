@@ -73,6 +73,6 @@ export function resolveHost(target: SavedHost, v: VaultView, override?: { user: 
   return {
     ok: true,
     title: label(target),
-    target: { host: target.host, port: target.port, user: c.user, auth: c.auth, jump: jump.length ? jump : undefined, startup },
+    target: { host: target.host, port: target.port, user: c.user, auth: c.auth, jump: jump.length ? jump : undefined, startup, agent: target.agent || undefined },
   }
 }

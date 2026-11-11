@@ -1,6 +1,7 @@
 import { memo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react'
 import { MIN_H, MIN_W, type Action, type Rect, type Session } from '../lib/workspace'
 import { Icon } from './icons'
+import { Popover } from './Popover'
 
 type Dir = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 const DIRS: Dir[] = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']
@@ -16,7 +17,7 @@ interface Props {
   broadcast: boolean
   area: { w: number; h: number }
   dispatch: (a: Action) => void
-  onDuplicate: (id: string) => void
+  onAction: (id: string, action: WindowAction) => void
   onSearch: (id: string) => void
   children: ReactNode
 }
@@ -27,7 +28,10 @@ function snapRect(snap: Exclude<Snap, null>, area: { w: number; h: number }): Re
   return { x: snap === 'left' ? 0 : area.w - w, y: 0, w, h: area.h }
 }
 
-export const WindowFrame = memo(function WindowFrame({ session, focused, tabbed, broadcast, area, dispatch, onDuplicate, onSearch, children }: Props) {
+export type WindowAction = 'split-right' | 'split-down' | 'duplicate' | 'forward' | 'record'
+
+export const WindowFrame = memo(function WindowFrame({ session, focused, tabbed, broadcast, area, dispatch, onAction, onSearch, children }: Props) {
+  const [menu, setMenu] = useState(false)
   const { id, rect, minimized, meta } = session
   const maximized = session.maximized || tabbed
   const frameRef = useRef<HTMLDivElement>(null)
@@ -128,6 +132,8 @@ export const WindowFrame = memo(function WindowFrame({ session, focused, tabbed,
           <span className={`dot ${statusDot}`} />
           <span className="swatch" style={{ background: session.color }} />
           <span className="win-title">{session.title}</span>
+          {meta.recording && <span className="rec-badge" title="Recording"><span className="rec-dot" />REC</span>}
+          {meta.phase === 'resuming' && <span className="win-size">reconnecting…</span>}
           {meta.cols > 0 && <span className="win-size">{meta.cols}×{meta.rows}</span>}
           <span className="win-actions">
             <button
@@ -141,7 +147,25 @@ export const WindowFrame = memo(function WindowFrame({ session, focused, tabbed,
               <Icon name="folder" size={14} />
             </button>
             <button title="Find (Ctrl+Shift+F)" aria-label="Find" onClick={() => onSearch(id)}><Icon name="search" size={14} /></button>
-            <button title="Duplicate session" aria-label="Duplicate session" onClick={() => onDuplicate(id)}><Icon name="copy" size={14} /></button>
+            <span className="anchor">
+              <button title="More" aria-label="More window actions" aria-expanded={menu} data-popover-anchor onClick={() => setMenu((m) => !m)}><Icon name="more" size={14} /></button>
+              {menu && (
+                <Popover onClose={() => setMenu(false)} className="right win-menu">
+                  {([
+                    ['split-right', 'split', 'Split right'],
+                    ['split-down', 'splitDown', 'Split down'],
+                    ['duplicate', 'copy', 'Duplicate session'],
+                    ['forward', 'forward', 'Forward a port…'],
+                    ['record', 'record', meta.recording ? 'Stop recording & save' : 'Record session'],
+                  ] as const).map(([act, icon, label]) => (
+                    <button key={act} className="pop-item" disabled={(act === 'forward' || act === 'record') && meta.phase !== 'ready' && !meta.recording}
+                      onClick={() => { setMenu(false); onAction(id, act) }}>
+                      <Icon name={icon} size={14} /><span>{label}</span>
+                    </button>
+                  ))}
+                </Popover>
+              )}
+            </span>
             {!tabbed && (
               <>
                 <button title="Minimize" aria-label="Minimize" onClick={() => dispatch({ type: 'minimize', id })}><Icon name="min" size={14} /></button>

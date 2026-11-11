@@ -25,6 +25,8 @@ export interface HostItem {
   jumpHostId?: string
   /** Snippet typed into the shell after connecting. */
   startupSnippetId?: string
+  /** Forward an SSH agent holding this connection's keys (opt-in). */
+  agent?: boolean
 }
 export interface SnippetItem {
   kind: 'snippet'

@@ -23,6 +23,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/k4ran909/webssh/internal/config"
 )
@@ -85,7 +86,7 @@ func testSSHServerWith(t *testing.T, opts serverOpts) (port int, hostFP string, 
 }
 
 func serveTestConn(conn net.Conn, cfg *ssh.ServerConfig, opts serverOpts) {
-	_, chans, reqs, err := ssh.NewServerConn(conn, cfg)
+	sconn, chans, reqs, err := ssh.NewServerConn(conn, cfg)
 	if err != nil {
 		conn.Close()
 		return
@@ -105,6 +106,7 @@ func serveTestConn(conn net.Conn, cfg *ssh.ServerConfig, opts serverOpts) {
 			return
 		}
 		go func() {
+			agentReq := false
 			for req := range creqs {
 				switch req.Type {
 				case "subsystem":
@@ -120,9 +122,21 @@ func serveTestConn(conn net.Conn, cfg *ssh.ServerConfig, opts serverOpts) {
 						continue
 					}
 					go func() { srv.Serve(); ch.Close() }()
+				case "auth-agent-req@openssh.com":
+					agentReq = true
+					req.Reply(true, nil)
 				case "pty-req", "shell":
 					req.Reply(true, nil)
 					if req.Type == "shell" {
+						if agentReq {
+							// Report how many keys the forwarded agent offers.
+							if ach, areqs, err := sconn.OpenChannel("auth-agent@openssh.com", nil); err == nil {
+								go ssh.DiscardRequests(areqs)
+								keys, err := agent.NewClient(ach).List()
+								fmt.Fprintf(ch, "agent-keys:%d err:%v\r\n", len(keys), err)
+								ach.Close()
+							}
+						}
 						go echoShell(ch)
 					}
 				case "window-change":
@@ -183,8 +197,13 @@ func echoShell(ch ssh.Channel) {
 // startGateway returns the WebSocket URL; httpBase derives the API base from it.
 // Requests act as user "u1" unless X-Test-User / X-Test-Anon say otherwise.
 func startGateway(t *testing.T, allowPrivate bool) string {
+	return startGatewayWith(t, config.Config{AllowPrivate: allowPrivate})
+}
+
+func startGatewayWith(t *testing.T, cfg config.Config) string {
 	t.Helper()
-	g := New(config.Config{AllowPrivate: allowPrivate, MaxSessions: 4, MaxUserSessions: 4, DialTimeout: 2 * time.Second},
+	cfg.MaxSessions, cfg.MaxUserSessions, cfg.DialTimeout = 4, 4, 2*time.Second
+	g := New(cfg,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Hooks{User: func(r *http.Request) (string, bool) {
 			if u := r.Header.Get("X-Test-User"); u != "" {
@@ -195,6 +214,10 @@ func startGateway(t *testing.T, allowPrivate bool) string {
 	mux := http.NewServeMux()
 	mux.Handle("GET /ws", g)
 	g.SFTPRoutes(mux, func(h http.Handler) http.Handler { return h })
+	g.ForwardRoutes(mux, func(h http.Handler) http.Handler { return h })
+	for _, p := range cfg.ForwardPorts {
+		mux.Handle(fmt.Sprintf("/preview/%d/", p), http.StripPrefix(fmt.Sprintf("/preview/%d", p), g.previewHandler(p)))
+	}
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"

@@ -16,19 +16,23 @@ export interface Target extends Endpoint {
   jump?: (Endpoint & { label?: string })[]
   /** Command typed into the shell once it's ready. */
   startup?: string
+  /** Forward an SSH agent holding this connection's keys. */
+  agent?: boolean
 }
 
 type WireHop = Endpoint & { knownHostKey: string }
 
 export type ClientMsg =
-  | (WireHop & { t: 'connect'; jump?: WireHop[]; cols: number; rows: number; term: string })
+  | (WireHop & { t: 'connect'; jump?: WireHop[]; agent?: boolean; cols: number; rows: number; term: string })
+  | { t: 'resume'; token: string; offset: number; cols: number; rows: number }
   | { t: 'resize'; cols: number; rows: number }
   | { t: 'hostkey-accept' }
   | { t: 'hostkey-reject' }
 
 export type ServerMsg =
   | { t: 'hostkey'; status: 'new' | 'changed'; host: string; port: number; fingerprint: string; algo: string }
-  | { t: 'ready'; fingerprint: string; algo: string; sftp?: string }
+  | { t: 'ready'; fingerprint: string; algo: string; sftp?: string; resume?: string }
+  | { t: 'resumed'; offset?: number; gap?: boolean; sftp?: string }
   | { t: 'exit'; exitCode: number }
   | { t: 'error'; code: string; msg: string }
 

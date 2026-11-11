@@ -1,8 +1,8 @@
 import { algoLabel } from '../lib/protocol'
 import type { Action, WorkspaceState } from '../lib/workspace'
 
-const PHASE_LABEL = { ready: 'Connected', connecting: 'Connecting', hostkey: 'Verify host key', error: 'Failed', ended: 'Ended', lost: 'Lost' }
-const dotClass = (p: string) => (p === 'ready' ? 'ok' : p === 'error' ? 'bad' : p === 'connecting' || p === 'hostkey' ? 'busy' : '')
+const PHASE_LABEL = { ready: 'Connected', connecting: 'Connecting', resuming: 'Reconnecting', hostkey: 'Verify host key', error: 'Failed', ended: 'Ended', lost: 'Lost' }
+const dotClass = (p: string) => (p === 'ready' ? 'ok' : p === 'error' ? 'bad' : p === 'connecting' || p === 'hostkey' || p === 'resuming' ? 'busy' : '')
 
 /** Bottom bar: a taskbar for windows plus facts about the focused session. */
 export function Dock({ ws, showTasks, dispatch }: { ws: WorkspaceState; showTasks: boolean; dispatch: (a: Action) => void }) {

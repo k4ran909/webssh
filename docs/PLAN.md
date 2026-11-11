@@ -389,14 +389,14 @@ Estimates assume one developer working with AI assistance, part-time-ish.
 - [x] Import `~/.ssh/config` (Host/HostName/User/Port/ProxyJump, `Host *` defaults; patterns and Match skipped with a warning). Termius export → not done.
 - [x] Host groups (collapsible in the sidebar). Command palette was done in the workspace milestone.
 
-### Phase 3 — Pro UX (2–3 weeks)
-- [ ] Split panes + broadcast input.
-- [ ] Session resume after network drop.
-- [ ] Port forwarding (remote + HTTP preview URLs).
-- [ ] Agent forwarding.
-- [ ] PWA install, mobile extra-keys bar.
-- [ ] Passkeys (WebAuthn) login.
-- [ ] Opt-in session recording (asciinema format) + playback.
+### Phase 3 — Pro UX ✅ (2026-11-12)
+- [x] Split: "split right/down" opens a second session inside a window's area (broadcast input shipped in the workspace milestone). Implemented as two windows sharing the space rather than nested panes.
+- [x] Session resume after network drop: the SSH session outlives its WebSocket for `WEBSSH_RESUME_MINUTES` (default 5); the browser reattaches with backoff (and on the `online` event) and the gateway replays missed output from a 512 KB ring, by byte offset. Reading pauses while detached. Exits that happen while away are delivered on resume.
+- [x] Port forwarding: HTTP/WebSocket previews, one origin (port) per forward, one-time access link → per-port cookie, webssh cookies stripped both ways, audited. Remote (-R) and raw-TCP local forwards → not done (no browser equivalent; needs the Phase 5 companion CLI).
+- [x] Agent forwarding (opt-in per host; keys of the connection's hops, in gateway memory for the session).
+- [x] PWA manifest + icon; extra-keys bar with sticky Ctrl/Alt on phones and touch devices. No service worker (no offline mode on purpose).
+- [ ] Passkeys (WebAuthn) login → deferred: a passkey can't unlock the zero-knowledge vault without the WebAuthn PRF extension, whose support is still patchy, so it would only replace the login half and still prompt for the master password.
+- [x] Session recording to asciicast v2, done in the browser (never stored on the gateway), with a player (seek, 1–8×, idle gaps capped at 2 s).
 
 ### Phase 4 — Teams / SaaS (3–4 weeks)
 - [ ] Team vaults: per-member wrapped team key (public-key crypto — X25519 per user), roles (owner/admin/member/read-only).
