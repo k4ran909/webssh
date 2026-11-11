@@ -1,7 +1,7 @@
 // Account flows: each turns a password into keys locally, then talks to /api.
 import { api, ApiError, type Keys, type SignedIn } from './api'
 import {
-  derivePasswordKeys, importVaultKey, newCredentials, newRecovery, randomBytes, recoveryAuth, unwrapVaultKey,
+  derivePasswordKeys, importVaultKey, newCredentials, newRecovery, newSharingKeypair, randomBytes, recoveryAuth, unwrapVaultKey,
   type Bytes, type Kdf, type PasswordKeys,
 } from './crypto'
 
@@ -26,13 +26,17 @@ async function unlockWith(keys: PasswordKeys, wrapped: string): Promise<CryptoKe
   return key
 }
 
-export async function signup(email: string, password: string): Promise<Opened> {
+export async function signup(email: string, password: string, invite?: string): Promise<Opened> {
   const raw = randomBytes(32)
   const creds = await newCredentials(password, raw)
   const rec = await newRecovery(raw)
-  const session = await api<SignedIn>('POST', '/api/auth/signup', { email, ...creds, ...rec.material })
   const vaultKey = await importVaultKey(raw)
   raw.fill(0)
+  // The sharing keypair is made up front so teammates can add this account right away.
+  const kp = await newSharingKeypair(vaultKey)
+  const session = await api<SignedIn>('POST', '/api/auth/signup', {
+    email, ...creds, ...rec.material, publicKey: kp.publicKey, encPrivateKey: kp.encPrivateKey, invite: invite || undefined,
+  })
   return { session, vaultKey, recoveryCode: rec.code }
 }
 

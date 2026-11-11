@@ -78,9 +78,21 @@ func (a *API) vaultDelete(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) auditList(w http.ResponseWriter, r *http.Request) {
 	p := current(r.Context())
-	events, err := a.db.Audit(r.Context(), p.user.ID, 200)
+	csvOut := r.URL.Query().Get("format") == "csv"
+	limit := 200
+	if csvOut {
+		limit = 100_000
+	}
+	events, err := a.db.Audit(r.Context(), p.user.ID, limit)
 	if err != nil {
 		a.fail(w, err)
+		return
+	}
+	if csvOut {
+		for i := range events {
+			events[i].Email = p.user.Email
+		}
+		writeAuditCSV(w, "webssh-activity.csv", events)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})

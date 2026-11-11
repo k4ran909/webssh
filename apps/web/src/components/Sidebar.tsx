@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { hasCredentials, type SavedHost } from '../lib/vault'
+import { hasCredentials, PERSONAL, type SavedHost, type VaultInfo } from '../lib/vault'
 import type { Session } from '../lib/workspace'
 import { Icon } from './icons'
 
 interface Props {
   hosts: SavedHost[]
+  vaults: VaultInfo[]
   sessions: Session[]
   syncError?: string
   onOpen: (h: SavedHost) => void
@@ -15,7 +16,7 @@ interface Props {
   onImport: () => void
 }
 
-export function Sidebar({ hosts, sessions, syncError, onOpen, onAdd, onEdit, onDelete, onKeychain, onImport }: Props) {
+export function Sidebar({ hosts, vaults, sessions, syncError, onOpen, onAdd, onEdit, onDelete, onKeychain, onImport }: Props) {
   const [q, setQ] = useState('')
   const [confirm, setConfirm] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -25,12 +26,37 @@ export function Sidebar({ hosts, sessions, syncError, onOpen, onAdd, onEdit, onD
     sessions.filter((s) => s.target.host === h.host && s.target.port === h.port && s.target.user === h.user).length
   const nameOf = (id?: string) => hosts.find((x) => x.id === id)?.label
 
-  const groups = new Map<string, SavedHost[]>()
-  for (const h of shown) {
-    const g = h.group ?? ''
-    groups.set(g, [...(groups.get(g) ?? []), h])
+  const writable = (h: SavedHost) => vaults.find((v) => v.id === (h.vault ?? PERSONAL))?.writable ?? true
+  const teamVaults = vaults.filter((v) => v.id !== PERSONAL)
+
+  const groupsOf = (list: SavedHost[]) => {
+    const groups = new Map<string, SavedHost[]>()
+    for (const h of list) {
+      const g = h.group ?? ''
+      groups.set(g, [...(groups.get(g) ?? []), h])
+    }
+    return { groups, order: [...groups.keys()].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b))) }
   }
-  const order = [...groups.keys()].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)))
+
+  const section = (vaultId: string, list: SavedHost[]) => {
+    const { groups, order } = groupsOf(list)
+    return order.map((g) => {
+      const key = vaultId + '/' + g
+      return (
+        <div key={key} className="host-group">
+          {g && (
+            <button className="group-head" aria-expanded={!collapsed.has(key)}
+              onClick={() => setCollapsed((c) => { const n = new Set(c); if (n.has(key)) n.delete(key); else n.add(key); return n })}>
+              <Icon name={collapsed.has(key) ? 'right' : 'down'} size={12} />
+              <span>{g}</span>
+              <span className="count">{groups.get(g)!.length}</span>
+            </button>
+          )}
+          {(!g || !collapsed.has(key) || needle) && groups.get(g)!.map(row)}
+        </div>
+      )
+    })
+  }
 
   const row = (h: SavedHost) => {
     const n = openCount(h)
@@ -46,7 +72,7 @@ export function Sidebar({ hosts, sessions, syncError, onOpen, onAdd, onEdit, onD
         </span>
         {hasCredentials(h) && <span className="cred-badge" title={h.identityId || h.keyId ? 'Uses the keychain' : 'Credentials saved in vault'}><Icon name={h.identityId || h.keyId ? 'key' : 'lock'} size={12} /></span>}
         {n > 0 && <span className="open-count" title={`${n} open`}>{n}</span>}
-        {confirm === h.id ? (
+        {!writable(h) ? null : confirm === h.id ? (
           <span className="row-actions show" onClick={(e) => e.stopPropagation()}>
             <button className="danger-txt" onClick={() => { onDelete(h.id); setConfirm(null) }}>Delete</button>
             <button onClick={() => setConfirm(null)}>Keep</button>
@@ -75,19 +101,7 @@ export function Sidebar({ hosts, sessions, syncError, onOpen, onAdd, onEdit, onD
         </span>
       </div>
       <div className="host-list">
-        {order.map((g) => (
-          <div key={g || '-'} className="host-group">
-            {g && (
-              <button className="group-head" aria-expanded={!collapsed.has(g)}
-                onClick={() => setCollapsed((c) => { const n = new Set(c); if (n.has(g)) n.delete(g); else n.add(g); return n })}>
-                <Icon name={collapsed.has(g) ? 'right' : 'down'} size={12} />
-                <span>{g}</span>
-                <span className="count">{groups.get(g)!.length}</span>
-              </button>
-            )}
-            {(!g || !collapsed.has(g) || needle) && groups.get(g)!.map(row)}
-          </div>
-        ))}
+        {section(PERSONAL, shown.filter((h) => (h.vault ?? PERSONAL) === PERSONAL))}
         {hosts.length === 0 && (
           <div className="side-empty">
             <p>No saved hosts yet.</p>
@@ -95,6 +109,21 @@ export function Sidebar({ hosts, sessions, syncError, onOpen, onAdd, onEdit, onD
           </div>
         )}
         {hosts.length > 0 && shown.length === 0 && <div className="side-empty"><p>No match.</p></div>}
+        {teamVaults.map((v) => {
+          const list = shown.filter((h) => h.vault === v.id)
+          return (
+            <div key={v.id} className="vault-section">
+              <div className="vault-head" title={v.error}>
+                <Icon name="users" size={12} />
+                <span>{v.name}</span>
+                <span className="tag">{v.role}</span>
+              </div>
+              {v.error && <p className="vault-err">{v.error}</p>}
+              {!v.error && list.length === 0 && !needle && <p className="vault-err">No shared hosts yet. Edit a host and pick this team as its vault.</p>}
+              {section(v.id, list)}
+            </div>
+          )
+        })}
       </div>
       <button className="side-keychain" onClick={onKeychain}><Icon name="key" size={14} /> Keychain</button>
       <div className={`side-foot${syncError ? ' bad' : ''}`} title={syncError}>

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ed25519Supported, generateEd25519, inspectPrivateKey, installCommand } from '../lib/sshkey'
-import { vault, type Identity, type SavedHost, type SavedKey } from '../lib/vault'
+import { vault, vaultFor, type Identity, type SavedHost, type SavedKey } from '../lib/vault'
 import { Icon } from './icons'
 
 interface Props {
@@ -83,9 +83,9 @@ function Keys({ keys, identities, hosts, canInstall, onInstall }: Omit<Props, 'o
                   <Icon name="terminal" size={13} /> Install
                 </button>
               )}
-              {confirm === k.id ? (
+              {!vaultFor(k.vault).info().writable ? <span className="tag" title="Shared with you as a viewer">read-only</span> : confirm === k.id ? (
                 <>
-                  <button className="btn danger" onClick={() => { vault.remove(k.id).catch(report); setConfirm(null) }}>Delete</button>
+                  <button className="btn danger" onClick={() => { vaultFor(k.vault).remove(k.id).catch(report); setConfirm(null) }}>Delete</button>
                   <button className="btn" onClick={() => setConfirm(null)}>Keep</button>
                 </>
               ) : (
@@ -218,10 +218,10 @@ function Identities({ keys, identities, hosts }: { keys: SavedKey[]; identities:
               </div>
             </div>
             <div className="kc-acts">
-              <button className="icon-btn sm" title="Edit" aria-label={`Edit ${i.label}`} onClick={() => setEditing(i)}><Icon name="edit" size={14} /></button>
-              {confirm === i.id ? (
+              {vaultFor(i.vault).info().writable && <button className="icon-btn sm" title="Edit" aria-label={`Edit ${i.label}`} onClick={() => setEditing(i)}><Icon name="edit" size={14} /></button>}
+              {!vaultFor(i.vault).info().writable ? <span className="tag" title="Shared with you as a viewer">read-only</span> : confirm === i.id ? (
                 <>
-                  <button className="btn danger" onClick={() => { vault.remove(i.id).catch(report); setConfirm(null) }}>Delete</button>
+                  <button className="btn danger" onClick={() => { vaultFor(i.vault).remove(i.id).catch(report); setConfirm(null) }}>Delete</button>
                   <button className="btn" onClick={() => setConfirm(null)}>Keep</button>
                 </>
               ) : (
@@ -254,7 +254,7 @@ function IdentityForm({ keys, initial, onDone }: { keys: SavedKey[]; initial?: I
     if (!username.trim()) return setError('Enter a username.')
     if (kind === 'key' && !keyId) return setError('Pick a key, or add one on the Keys tab.')
     if (kind === 'password' && !password && !initial?.password) return setError('Enter a password.')
-    vault.put({
+    vaultFor(initial?.vault).put({
       kind: 'identity', label: label.trim() || username.trim(), username: username.trim(),
       ...(kind === 'key' ? { keyId } : { password: password || initial?.password }),
     }, initial?.id).catch(report)

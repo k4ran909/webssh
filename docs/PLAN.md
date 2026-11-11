@@ -398,12 +398,16 @@ Estimates assume one developer working with AI assistance, part-time-ish.
 - [ ] Passkeys (WebAuthn) login → deferred: a passkey can't unlock the zero-knowledge vault without the WebAuthn PRF extension, whose support is still patchy, so it would only replace the login half and still prompt for the master password.
 - [x] Session recording to asciicast v2, done in the browser (never stored on the gateway), with a player (seek, 1–8×, idle gaps capped at 2 s).
 
-### Phase 4 — Teams / SaaS (3–4 weeks)
-- [ ] Team vaults: per-member wrapped team key (public-key crypto — X25519 per user), roles (owner/admin/member/read-only).
-- [ ] Share host groups with a team without sharing personal vault.
-- [ ] Billing (Stripe), plans: Free (personal, N hosts), Pro, Team.
-- [ ] Multi-region gateways (route to nearest), Redis for presence/rate limits.
-- [ ] Admin: audit export, session policies (force MFA, block private targets, IP allowlists).
+### Phase 4 — Teams ✅ (2026-11-12, self-hosted scope)
+- [x] Team vaults: random AES-256 team key per team, wrapped for each member with ECDH P-256 (ephemeral key + HKDF + AES-GCM; WebCrypto has no X25519 everywhere yet). Members join unconfirmed; an owner/admin confirms them after comparing key fingerprints, so the server can't swap in its own key.
+- [x] Roles: owner / admin / member / viewer. Viewers can connect with shared hosts but can't change the vault (enforced by the gateway, hidden in the UI). Admins can't touch owners or other admins; the last owner can't leave.
+- [x] Share without exposing the personal vault: pick a team as a host's vault and it moves there, taking copies of what it needs (identity/key, jump chain, startup snippet, trusted host key) under new ids.
+- [x] Invitations: existing accounts are added directly; new people get a 7-day link that opens sign-up for that one email even when sign-up is closed.
+- [x] Admin (first account): users with last sign-in and 2FA status, delete account, gateway invitations, "require 2FA for every account" (an account without it can only set it up), per-team "require 2FA", audit across all accounts with CSV export (personal CSV export too).
+- [ ] Key rotation when a member leaves → not done. Removing someone stops the server from giving them the team vault, but anything they already decrypted (including saved passwords) should be treated as known to them; rotate those credentials.
+- [ ] Billing (Stripe), plans → deferred: needs a Stripe account and a pricing decision, and only matters for a hosted SaaS.
+- [ ] Multi-region gateways, Redis for presence/rate limits → deferred: only matters for a hosted SaaS; a single self-hosted gateway doesn't need it.
+- [ ] IP allowlists, per-team block on private targets → not done.
 
 ### Phase 5 — Advanced (open-ended)
 - [ ] E2E mode: SSH in browser via WASM, gateway becomes a TCP relay only.

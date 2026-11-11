@@ -16,7 +16,10 @@ CREATE TABLE IF NOT EXISTS users (
   totp_pending         BLOB,
   totp_last_step       INTEGER NOT NULL DEFAULT 0,
   vault_revision       INTEGER NOT NULL DEFAULT 0,
-  created_at           INTEGER NOT NULL
+  created_at           INTEGER NOT NULL,
+  public_key           TEXT NOT NULL DEFAULT '',  -- ECDH P-256 SPKI (base64), for sharing
+  enc_private_key      TEXT NOT NULL DEFAULT '',  -- its private key, AES-GCM under the vault key
+  is_admin             INTEGER NOT NULL DEFAULT 0  -- gateway admin (the first account)
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -50,3 +53,51 @@ CREATE TABLE IF NOT EXISTS audit_events (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS audit_user ON audit_events(user_id, id DESC);
+
+-- Teams share a vault encrypted with a team key. Each member holds that key
+-- wrapped (ECDH-ES) to their own public key; the server never sees it.
+CREATE TABLE IF NOT EXISTS teams (
+  id             TEXT PRIMARY KEY,
+  name           TEXT NOT NULL,
+  require_totp   INTEGER NOT NULL DEFAULT 0,
+  vault_revision INTEGER NOT NULL DEFAULT 0,
+  created_at     INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS team_members (
+  team_id     TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role        TEXT NOT NULL,             -- owner | admin | member | viewer
+  wrapped_key TEXT NOT NULL DEFAULT '',  -- '' until an admin confirms the member
+  invited_by  TEXT NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (team_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS team_members_user ON team_members(user_id);
+
+CREATE TABLE IF NOT EXISTS team_items (
+  team_id    TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  id         TEXT NOT NULL,
+  data       TEXT NOT NULL,
+  revision   INTEGER NOT NULL,
+  deleted    INTEGER NOT NULL DEFAULT 0,
+  updated_by TEXT NOT NULL DEFAULT '',
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (team_id, id)
+);
+CREATE INDEX IF NOT EXISTS team_items_rev ON team_items(team_id, revision);
+
+-- Sign-up invitations (for people without an account), optionally into a team.
+CREATE TABLE IF NOT EXISTS invites (
+  token_hash BLOB PRIMARY KEY,
+  email      TEXT NOT NULL COLLATE NOCASE,
+  team_id    TEXT REFERENCES teams(id) ON DELETE CASCADE,
+  role       TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);

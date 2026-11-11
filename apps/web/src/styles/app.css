@@ -554,3 +554,49 @@ a.btn { text-decoration: none; }
   .sftp { position: absolute; inset: 0; z-index: 5; width: auto; border-left: 0; border-radius: 0 0 var(--radius) var(--radius); }
   .modal { padding: 22px 18px 18px; }
 }
+
+/* ── Phase 4: teams, shared vaults, admin ── */
+.teams-modal { max-width: 820px; padding: 22px 24px 24px; max-height: calc(100vh - 32px); display: flex; flex-direction: column; }
+.teams-body { display: grid; grid-template-columns: 210px 1fr; gap: 20px; min-height: 0; flex: 1; }
+.team-list { display: flex; flex-direction: column; gap: 2px; padding-right: 16px; border-right: 1px solid var(--border); overflow: auto; }
+.team-item { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; padding: 8px 10px; border-radius: var(--radius-sm); text-align: left; color: var(--text-2); }
+.team-item:hover { background: var(--hover); color: var(--text); }
+.team-item.on { background: var(--surface-2); color: var(--text); }
+.team-item.new { flex-direction: row; align-items: center; gap: 6px; font-size: 13px; margin-top: 6px; }
+.team-name { font-weight: 500; font-size: 13px; }
+.team-meta { font: 10px var(--mono); color: var(--text-3); }
+.my-fp { margin-top: auto; padding-top: 16px; display: flex; flex-direction: column; gap: 4px; }
+.my-fp .pop-sub { font-size: 11px; }
+.my-fp code { font-size: 11px; line-height: 1.6; word-spacing: 2px; color: var(--text); user-select: all; }
+.team-detail { overflow: auto; min-width: 0; }
+.team-title { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.team-title h3 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+.member-list { display: flex; flex-direction: column; }
+.member-row { display: flex; align-items: center; gap: 8px; padding: 9px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.member-row:last-child { border-bottom: 0; }
+.member-row.invited { opacity: 0.75; }
+.member-row .kc-title { font-size: 13px; }
+.member-row .select { height: 28px; font-size: 12px; }
+.btn.sm-btn { height: 28px; font-size: 12px; padding: 0 10px; }
+.tag.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.invite-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.invite-form .input { flex: 1; min-width: 160px; height: 32px; font-size: 13px; }
+.invite-form .select { flex: none; min-width: 0; }
+.invite-form .full, .full { flex-basis: 100%; }
+.invite-link { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.invite-link .secret { flex: 1; margin: 0; font-size: 12px; }
+.fp-check { grid-template-columns: repeat(3, 1fr); font-size: 14px; }
+.audit-head { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding-bottom: 8px; }
+.audit-head .pop-sub { margin: 0; font-size: 12px; }
+.audit-head .btn { flex: none; text-decoration: none; }
+.vault-section { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.vault-head { display: flex; align-items: center; gap: 6px; padding: 2px 8px 4px; font-size: 12px; font-weight: 600; color: var(--text); }
+.vault-head span:not(.tag) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vault-head .tag { margin-left: auto; }
+.vault-err { margin: 2px 8px 6px; font-size: 11px; color: var(--text-3); line-height: 1.45; }
+.auth-card.gate { max-width: 440px; }
+@media (max-width: 760px) {
+  .teams-body { grid-template-columns: 1fr; }
+  .team-list { border-right: 0; border-bottom: 1px solid var(--border); padding: 0 0 12px; max-height: 180px; }
+  .my-fp { padding-top: 8px; }
+}

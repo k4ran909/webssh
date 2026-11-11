@@ -56,6 +56,8 @@ func (a *API) Routes(mux *http.ServeMux) {
 	mux.Handle("PUT /api/vault/items/{id}", a.RequireUser(http.HandlerFunc(a.vaultPut)))
 	mux.Handle("DELETE /api/vault/items/{id}", a.RequireUser(http.HandlerFunc(a.vaultDelete)))
 	mux.Handle("GET /api/audit", a.RequireUser(http.HandlerFunc(a.auditList)))
+	a.teamRoutes(mux)
+	a.adminRoutes(mux)
 }
 
 // ── request context ──
@@ -107,6 +109,12 @@ func (a *API) RequireUser(next http.Handler) http.Handler {
 		p := a.lookup(r)
 		if p == nil {
 			writeErr(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Sign in first.")
+			return
+		}
+		// Gateway policy: accounts without 2FA can only set it up (this also
+		// blocks SSH, SFTP and forwarding, which go through RequireUser).
+		if p.user.TOTPSecret == nil && !twoFactorExempt(r.URL.Path) && a.require2FA(r.Context()) {
+			writeErr(w, http.StatusForbidden, "TOTP_SETUP_REQUIRED", "This gateway requires two-factor authentication. Set it up to continue.")
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)))

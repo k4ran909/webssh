@@ -2,9 +2,9 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, us
 import type { Auth, Target } from './lib/protocol'
 import type { SignedIn } from './lib/api'
 import { credentialCache, credKey, liveSessions, readySessions, sendText } from './lib/live'
-import { credentialsFor, resolveHost, type VaultView } from './lib/resolve'
+import { credentialsFor, resolveHost } from './lib/resolve'
 import { getLastTarget, saveLastTarget, savePrefs, type Prefs } from './lib/storage'
-import { HOST_COLORS, useVault, vault, type HostItem, type SavedHost, type Snippet } from './lib/vault'
+import { HOST_COLORS, PERSONAL, useVault, vault, vaultFor, type HostItem, type SavedHost, type Snippet } from './lib/vault'
 import { initialWorkspace, sessionLabel, workspaceReducer, type SessionMeta } from './lib/workspace'
 import { AccountDialog } from './components/AccountDialog'
 import { CommandPalette, type PaletteItem } from './components/CommandPalette'
@@ -20,6 +20,9 @@ import { Workspace } from './components/Workspace'
 import type { WindowAction } from './components/WindowFrame'
 import { ForwardDialog, ForwardsPanel, useForwards } from './components/Forwarding'
 import { KeysBar } from './components/KeysBar'
+import { TeamsDialog } from './components/TeamsDialog'
+import { AdminDialog } from './components/AdminDialog'
+import { moveHost } from './lib/share'
 import { downloadText, parseCast, type Cast } from './lib/cast'
 import { Icon, Logo } from './components/icons'
 
@@ -63,8 +66,8 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
   const wsRef = useRef(ws)
   wsRef.current = ws
 
-  const { hosts, snippets, keys, identities, error: syncError } = useVault()
-  const view: VaultView = useMemo(() => ({ hosts, snippets, keys, identities }), [hosts, snippets, keys, identities])
+  const { hosts, snippets, keys, identities, knownHosts, vaults, error: syncError } = useVault()
+  const view = useMemo(() => ({ hosts, snippets, keys, identities, vaults }), [hosts, snippets, keys, identities, vaults])
   const viewRef = useRef(view)
   viewRef.current = view
   const hostsRef = useRef(hosts)
@@ -73,6 +76,10 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [account, setAccount] = useState(false)
   const [keychain, setKeychain] = useState(false)
+  const [teamsOpen, setTeamsOpen] = useState(false)
+  const [adminOpen, setAdminOpen] = useState(false)
+  const knownRef = useRef(knownHosts)
+  knownRef.current = knownHosts
   const [importing, setImporting] = useState(false)
   const [notice, setNotice] = useState('')
   const [palette, setPalette] = useState(false)
@@ -161,7 +168,8 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
   }, [])
 
   const upsertHost = (r: ConnectResult, hostId?: string): string => {
-    const existing = hostsRef.current.find((h) => h.id === hostId) ?? hostsRef.current.find((h) => sameEndpoint(h, r))
+    const writable = (h: SavedHost) => viewRef.current.vaults.find((v) => v.id === (h.vault ?? PERSONAL))?.writable ?? true
+    const existing = hostsRef.current.find((h) => h.id === hostId) ?? hostsRef.current.find((h) => sameEndpoint(h, r) && writable(h))
     const item: HostItem = {
       kind: 'host', label: r.label || existing?.label || '', color: r.color,
       host: r.host, port: r.port, user: r.user, method: r.method,
@@ -177,7 +185,14 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
       Object.assign(item, { password: existing.password, key: existing.key, passphrase: existing.passphrase })
     }
     const id = existing?.id ?? crypto.randomUUID()
-    vault.put(item, id).catch(report)
+    const from = existing?.vault ?? PERSONAL
+    const to = r.vault ?? from
+    vaultFor(from).put(item, id).then(async () => {
+      if (to === from) return
+      // Sharing (or un-sharing): copy it and what it depends on into the other vault.
+      await moveHost({ ...item, id, vault: from }, viewRef.current, to, knownRef.current)
+      setNotice(to === PERSONAL ? 'Moved to your personal vault.' : `Shared with ${viewRef.current.vaults.find((v) => v.id === to)?.name ?? 'the team'}.`)
+    }).catch((e) => setNotice(e instanceof Error ? e.message : 'Could not save the host.'))
     return id
   }
 
@@ -316,6 +331,8 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
       ...(ws.focusedId ? [{ id: 'a-files', section: 'Actions', label: 'Toggle files (SFTP)', icon: <Icon name="folder" size={14} />, run: () => dispatch({ type: 'toggleFiles', id: ws.focusedId! }) }] : []),
       { id: 'a-play', section: 'Actions', label: 'Play a recording…', hint: '.cast', icon: <Icon name="play" size={14} />, run: () => castInput.current?.click() },
       { id: 'a-fwd', section: 'Actions', label: 'Port forwarding', icon: <Icon name="forward" size={14} />, run: () => { fwd.refresh(); setPop('forwards') } },
+      { id: 'a-teams', section: 'Account', label: 'Teams', hint: 'shared vaults', icon: <Icon name="users" size={14} />, run: () => setTeamsOpen(true) },
+      ...(session.user.isAdmin ? [{ id: 'a-admin', section: 'Account', label: 'Gateway admin', hint: 'users, policy, audit', icon: <Icon name="shield" size={14} />, run: () => setAdminOpen(true) }] : []),
       { id: 'a-account', section: 'Account', label: 'Account & security', hint: session.user.email, icon: <Icon name="user" size={14} />, run: () => setAccount(true) },
       { id: 'a-lock', section: 'Account', label: 'Lock vault', icon: <Icon name="lock" size={14} />, run: onLock },
       { id: 'a-logout', section: 'Account', label: 'Sign out', icon: <Icon name="logout" size={14} />, run: onLogout },
@@ -386,7 +403,7 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
                 broadcast={broadcast}
                 onRun={runSnippet}
                 onAdd={(name, command) => vault.put({ kind: 'snippet', name, command }).catch(report)}
-                onDelete={(id) => vault.remove(id).catch(report)}
+                onDelete={(id) => vaultFor(snippets.find((s) => s.id === id)?.vault).remove(id).catch(report)}
               />
             </Popover>
           )}
@@ -416,9 +433,18 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
               <button className="pop-item" onClick={() => { setPop(null); setAccount(true) }}>
                 <Icon name="user" size={14} /><span>Account &amp; security</span><span className="pop-hint">{session.user.email}</span>
               </button>
+              <button className="pop-item" onClick={() => { setPop(null); setTeamsOpen(true) }}>
+                <Icon name="users" size={14} /><span>Teams</span>
+              </button>
+              {session.user.isAdmin && (
+                <button className="pop-item" onClick={() => { setPop(null); setAdminOpen(true) }}>
+                  <Icon name="shield" size={14} /><span>Gateway admin</span>
+                </button>
+              )}
             </Popover>
           )}
         </span>
+        <button className="icon-btn" title="Teams" aria-label="Teams" onClick={() => setTeamsOpen(true)}><Icon name="users" /></button>
         <button className="icon-btn" title="Lock vault" aria-label="Lock vault" onClick={onLock}><Icon name="lock" /></button>
         <button className="btn primary" onClick={newConnection}><Icon name="plus" size={14} /><span className="hide-sm">New</span></button>
       </header>
@@ -429,12 +455,13 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
             {mobileSidebar && <div className="scrim side-scrim" onClick={() => setMobileSidebar(false)} />}
             <Sidebar
               hosts={hosts}
+              vaults={vaults}
               sessions={ws.sessions}
               syncError={syncError}
               onOpen={openHost}
               onAdd={() => setDialog({ purpose: 'save', title: 'Add host', initial: {} })}
               onEdit={editHost}
-              onDelete={(id) => vault.remove(id).catch(report)}
+              onDelete={(id) => vaultFor(hosts.find((h) => h.id === id)?.vault).remove(id).catch(report)}
               onKeychain={() => setKeychain(true)}
               onImport={() => setImporting(true)}
             />
@@ -512,6 +539,8 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
           onClose={() => setKeychain(false)}
         />
       )}
+      {teamsOpen && <TeamsDialog myUserId={session.user.id} onClose={() => setTeamsOpen(false)} />}
+      {adminOpen && <AdminDialog myUserId={session.user.id} myTotp={session.user.totp} onClose={() => setAdminOpen(false)} />}
       {importing && (
         <ImportConfig hosts={hosts} onClose={() => setImporting(false)}
           onDone={(n) => { setImporting(false); setNotice(`Imported ${n} host${n === 1 ? '' : 's'}.`) }} />

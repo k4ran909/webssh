@@ -2,18 +2,26 @@
 
 A self-hosted, browser-based SSH client: a Go gateway bridges WebSocket ↔ SSH, and a React + xterm.js frontend renders the terminal. Hosts, saved credentials, snippets and trusted host keys live in an end-to-end encrypted vault. "webssh" is a placeholder name.
 
-**Status: Phase 3 (session resume, split, port forwarding, agent forwarding, recording, PWA) on top of Phases 0–2.** See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [design/THEME.md](design/THEME.md) for the visual system.
+**Status: Phase 4 (teams with end-to-end encrypted shared vaults, roles, invitations, admin and 2FA policy) on top of Phases 0–3.** See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [design/THEME.md](design/THEME.md) for the visual system.
 
 ## Features
 
 **Accounts and vault**
 - **Zero-knowledge vault.** Your master password never leaves the browser. Hosts (with optional saved passwords or keys), snippets and trusted host keys are encrypted on your device with AES-256-GCM before being synced.
-- **The first account owns the gateway.** Sign-up closes after the first account, unless you set `WEBSSH_OPEN_SIGNUP=true`.
+- **The first account is the gateway admin.** Sign-up closes after it, unless you set `WEBSSH_OPEN_SIGNUP=true` or send someone an invitation.
 - **Two-factor sign-in (TOTP)** with any authenticator app, with replay protection.
 - **Recovery code.** Shown once at sign-up, it's the only way back in if you forget the master password. Using it issues a new one.
 - **Auto-lock** after inactivity (default 15 minutes) and a manual lock. Open SSH sessions keep running behind the lock screen.
 - **Activity log** of sign-ins, security changes and SSH connections (destination, duration, bytes). It never records terminal contents.
 - **Change master password** re-wraps the vault key and signs out your other devices.
+
+**Teams**
+- **Shared vaults.** Create a team, add people, and pick the team as a host's vault to share it. The host's identity or key, jump hosts, startup snippet and trusted host key come along, so teammates can connect without asking you for anything. Team vaults are end-to-end encrypted like personal ones.
+- **Confirm by fingerprint.** New members wait until an owner or admin compares their key fingerprint (shown in Teams) and confirms them; only then is the team key encrypted for them.
+- **Roles:** owner, admin, member, and viewer (can connect, can't change anything).
+- **Invitations.** People who already have an account are added straight away; anyone else gets a 7-day sign-up link for their email address.
+- **Policies:** a team can require 2FA to open its vault, and the gateway admin can require 2FA for every account.
+- **Gateway admin:** list and remove accounts, send invitations, set the 2FA policy, and browse or export (CSV) the audit log of every account.
 
 **Servers and files**
 - **SFTP panel** beside each terminal, using the same SSH connection (no second login). Browse, upload with progress (drag and drop), download, rename/move, delete, chmod, and edit text files in place. "cd here" moves the shell to the folder you're viewing.
@@ -119,6 +127,8 @@ vault items ── AES-256-GCM(vault key, aad = item id) ──▶ server (opaqu
 - **The server never sees** your master password, vault key, saved hosts, saved credentials or snippets. A copy of the database alone doesn't decrypt anything. An attacker would have to guess your password through 64 MiB of Argon2id per guess.
 - **The gateway does see** SSH credentials and terminal traffic while a session is open, because it is the SSH client. Run your own gateway (that's the point of self-hosting). The destination host, port and username are recorded in your activity log.
 - **Sign-in:** sessions use an `HttpOnly`, `SameSite=Strict` cookie (`Secure` behind TLS). State-changing requests from other origins are refused. Login, recovery and 2FA attempts are rate-limited per IP and per account. Unknown emails get a decoy salt, so the login form doesn't reveal which accounts exist.
+- **Teams:** every account has a P-256 key pair; the private half is encrypted with your vault key. A team's key is random and encrypted separately for each member's public key, so the server only ever stores ciphertext. Members are confirmed by comparing key fingerprints out of band, which stops a malicious server from slipping in its own key. Two limits to know: removing a member doesn't rotate the team key, so rotate any shared passwords or keys they could have read; and a viewer can't edit the vault but can still use, and therefore read, the credentials shared with them.
+- **Admins can't read vaults.** The gateway admin manages accounts and policy, but has no way into anyone's personal or team vault they aren't a member of.
 - **Host keys:** trust on first use. The trusted fingerprint is synced in the vault, and a mismatch is a hard block.
 - **Resume** needs a per-session token that only the same account can use; a second browser taking over the session closes the first. While nobody is attached, the gateway stops reading from the server (SSH flow control holds it back) instead of buffering without limit.
 - **Port forwarding** previews live on their own ports, so a forwarded app can't run scripts against webssh. Access needs a one-time link from the forward's creator; webssh cookies are stripped before requests reach the forwarded app, and it can't set cookies named `webssh*`.

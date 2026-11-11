@@ -38,22 +38,39 @@ type keysResp struct {
 }
 
 type userResp struct {
-	ID    string `json:"id"`
-	Email string `json:"email"`
-	TOTP  bool   `json:"totp"`
+	ID      string `json:"id"`
+	Email   string `json:"email"`
+	TOTP    bool   `json:"totp"`
+	IsAdmin bool   `json:"isAdmin"`
+}
+
+type keypairResp struct {
+	PublicKey     string `json:"publicKey"`
+	EncPrivateKey string `json:"encPrivateKey"`
+}
+
+type policyResp struct {
+	Require2FA bool `json:"require2fa"`
 }
 
 type sessionResp struct {
-	User       *userResp `json:"user"`
-	Keys       *keysResp `json:"keys,omitempty"`
-	SignupOpen bool      `json:"signupOpen"`
+	User       *userResp    `json:"user"`
+	Keys       *keysResp    `json:"keys,omitempty"`
+	Keypair    *keypairResp `json:"keypair,omitempty"`
+	Policy     *policyResp  `json:"policy,omitempty"`
+	SignupOpen bool         `json:"signupOpen"`
 }
 
-func toSession(u *store.User) sessionResp {
-	return sessionResp{
-		User: &userResp{u.ID, u.Email, u.TOTPSecret != nil},
-		Keys: &keysResp{json.RawMessage(u.KDF), u.Salt, u.WrappedKey},
+func (a *API) toSession(r *http.Request, u *store.User) sessionResp {
+	s := sessionResp{
+		User:   &userResp{u.ID, u.Email, u.TOTPSecret != nil, u.IsAdmin},
+		Keys:   &keysResp{json.RawMessage(u.KDF), u.Salt, u.WrappedKey},
+		Policy: &policyResp{Require2FA: a.require2FA(r.Context())},
 	}
+	if u.PublicKey != "" {
+		s.Keypair = &keypairResp{u.PublicKey, u.EncPrivateKey}
+	}
+	return s
 }
 
 func (a *API) signupOpen(r *http.Request) bool {
@@ -70,7 +87,7 @@ func (a *API) session(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, sessionResp{SignupOpen: a.signupOpen(r)})
 		return
 	}
-	writeJSON(w, http.StatusOK, toSession(p.user))
+	writeJSON(w, http.StatusOK, a.toSession(r, p.user))
 }
 
 func (a *API) rateLimited(w http.ResponseWriter, r *http.Request, keys ...string) bool {
@@ -138,11 +155,17 @@ func (a *API) signupHandler(w http.ResponseWriter, r *http.Request) {
 		credentials
 		RecoveryWrappedKey string `json:"recoveryWrappedKey"`
 		RecoveryAuth       string `json:"recoveryAuth"`
+		keypairReq
+		Invite string `json:"invite,omitempty"`
 	}
 	if !decode(w, r, &req) || a.rateLimited(w, r) {
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if !req.keypairReq.valid(true) {
+		writeErr(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed key material.")
+		return
+	}
 	if !emailRe.MatchString(email) {
 		writeErr(w, http.StatusBadRequest, "BAD_EMAIL", "Enter a valid email address.")
 		return
@@ -158,8 +181,24 @@ func (a *API) signupHandler(w http.ResponseWriter, r *http.Request) {
 	// Serialize so two racing "first" signups can't both claim the gateway.
 	a.signup.Lock()
 	defer a.signup.Unlock()
-	if !a.signupOpen(r) {
-		writeErr(w, http.StatusForbidden, "SIGNUP_CLOSED", "Sign-up is closed on this gateway.")
+	n, err := a.db.CountUsers(r.Context())
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	// An invitation opens sign-up for its own email address only.
+	var inv *store.Invite
+	var invHash []byte
+	if req.Invite != "" {
+		h := sha256.Sum256([]byte(req.Invite))
+		invHash = h[:]
+		inv, _ = a.db.LookupInvite(r.Context(), invHash, a.now())
+		if inv == nil || !strings.EqualFold(inv.Email, email) {
+			writeErr(w, http.StatusForbidden, "INVITE_INVALID", "This invitation is invalid, expired, or for a different email address.")
+			return
+		}
+	} else if !a.cfg.OpenSignup && n > 0 {
+		writeErr(w, http.StatusForbidden, "SIGNUP_CLOSED", "Sign-up is closed on this gateway. Ask an admin for an invitation.")
 		return
 	}
 	recSalt := randomBytes(16)
@@ -167,6 +206,8 @@ func (a *API) signupHandler(w http.ResponseWriter, r *http.Request) {
 		ID: newID(), Email: email, KDF: kdf, Salt: req.Salt, AuthHash: authHash, AuthSalt: authSalt,
 		WrappedKey: req.WrappedKey, RecoveryWrappedKey: req.RecoveryWrappedKey,
 		RecoveryHash: saltedHash(recSalt, recAuth), RecoverySalt: recSalt, CreatedAt: a.now(),
+		PublicKey: req.PublicKey, EncPrivateKey: req.EncPrivateKey,
+		IsAdmin: n == 0, // the first account administers the gateway
 	}
 	if err := a.db.CreateUser(r.Context(), u); err != nil {
 		if errors.Is(err, store.ErrExists) {
@@ -180,8 +221,15 @@ func (a *API) signupHandler(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	a.Record(u.ID, "account.created", a.ClientIP(r), nil)
-	writeJSON(w, http.StatusOK, toSession(u))
+	if inv != nil {
+		_ = a.db.DeleteInvite(r.Context(), invHash)
+		if inv.TeamID != "" {
+			// Joins as unconfirmed: a team admin still has to hand over the team key.
+			_ = a.db.AddMember(r.Context(), inv.TeamID, u.ID, inv.Role, inv.CreatedBy)
+		}
+	}
+	a.Record(u.ID, "account.created", a.ClientIP(r), map[string]bool{"invited": inv != nil})
+	writeJSON(w, http.StatusOK, a.toSession(r, u))
 }
 
 // dummy work for unknown accounts so timing doesn't reveal which emails exist
@@ -258,7 +306,7 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.Record(u.ID, "login", a.ClientIP(r), map[string]string{"userAgent": r.UserAgent()})
-	writeJSON(w, http.StatusOK, toSession(u))
+	writeJSON(w, http.StatusOK, a.toSession(r, u))
 }
 
 func (a *API) logout(w http.ResponseWriter, r *http.Request) {
@@ -295,7 +343,7 @@ func (a *API) changePassword(w http.ResponseWriter, r *http.Request) {
 	_ = a.db.DeleteUserSessions(r.Context(), p.user.ID, p.tokenHash)
 	a.Record(p.user.ID, "password.changed", a.ClientIP(r), nil)
 	u, _ := a.db.UserByID(r.Context(), p.user.ID)
-	writeJSON(w, http.StatusOK, toSession(u))
+	writeJSON(w, http.StatusOK, a.toSession(r, u))
 }
 
 func (a *API) totpSetup(w http.ResponseWriter, r *http.Request) {
@@ -457,7 +505,7 @@ func (a *API) recoverFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	a.Record(userID, "account.recovered", a.ClientIP(r), nil)
 	u, _ := a.db.UserByID(ctx, userID)
-	writeJSON(w, http.StatusOK, toSession(u))
+	writeJSON(w, http.StatusOK, a.toSession(r, u))
 }
 
 // regenerateRecovery replaces the recovery code (requires the master password).

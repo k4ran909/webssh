@@ -35,6 +35,10 @@ func Open(path string) (*DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	return &DB{db}, nil
 }
 
@@ -55,16 +59,22 @@ type User struct {
 	TOTPPending        []byte
 	TOTPLastStep       int64
 	CreatedAt          time.Time
+	// Sharing keypair: the private key is encrypted with the user's vault key.
+	PublicKey     string
+	EncPrivateKey string
+	IsAdmin       bool
 }
 
 const userCols = `id, email, kdf, salt, auth_hash, auth_salt, wrapped_key, recovery_wrapped_key,
-	recovery_hash, recovery_salt, totp_secret, totp_pending, totp_last_step, created_at`
+	recovery_hash, recovery_salt, totp_secret, totp_pending, totp_last_step, created_at,
+	public_key, enc_private_key, is_admin`
 
 func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	var u User
 	var created int64
 	err := row.Scan(&u.ID, &u.Email, &u.KDF, &u.Salt, &u.AuthHash, &u.AuthSalt, &u.WrappedKey, &u.RecoveryWrappedKey,
-		&u.RecoveryHash, &u.RecoverySalt, &u.TOTPSecret, &u.TOTPPending, &u.TOTPLastStep, &created)
+		&u.RecoveryHash, &u.RecoverySalt, &u.TOTPSecret, &u.TOTPPending, &u.TOTPLastStep, &created,
+		&u.PublicKey, &u.EncPrivateKey, &u.IsAdmin)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -82,9 +92,10 @@ func (d *DB) CountUsers(ctx context.Context) (int, error) {
 }
 
 func (d *DB) CreateUser(ctx context.Context, u *User) error {
-	_, err := d.sql.ExecContext(ctx, `INSERT INTO users (`+userCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err := d.sql.ExecContext(ctx, `INSERT INTO users (`+userCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		u.ID, u.Email, u.KDF, u.Salt, u.AuthHash, u.AuthSalt, u.WrappedKey, u.RecoveryWrappedKey,
-		u.RecoveryHash, u.RecoverySalt, u.TOTPSecret, u.TOTPPending, u.TOTPLastStep, u.CreatedAt.Unix())
+		u.RecoveryHash, u.RecoverySalt, u.TOTPSecret, u.TOTPPending, u.TOTPLastStep, u.CreatedAt.Unix(),
+		u.PublicKey, u.EncPrivateKey, u.IsAdmin)
 	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 		return ErrExists
 	}
@@ -258,6 +269,7 @@ type AuditEvent struct {
 	IP        string    `json:"ip"`
 	Detail    string    `json:"detail"`
 	CreatedAt time.Time `json:"createdAt"`
+	Email     string    `json:"email,omitempty"` // admin view only
 }
 
 func (d *DB) AddAudit(ctx context.Context, userID, action, ip, detail string) error {

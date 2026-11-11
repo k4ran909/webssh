@@ -57,7 +57,8 @@ export interface IdentityItem {
   keyId?: string
 }
 export type ItemBody = HostItem | SnippetItem | KnownHostItem | KeyItem | IdentityItem
-export type Entry<T extends ItemBody = ItemBody> = T & { id: string }
+/** `vault` says where the item lives (personal or a team id); it is never encrypted into the item. */
+export type Entry<T extends ItemBody = ItemBody> = T & { id: string; vault?: string }
 
 export type SavedHost = Entry<HostItem>
 export type Snippet = Entry<SnippetItem>
@@ -69,11 +70,6 @@ export const HOST_COLORS = ['#a3a3a3', '#f87171', '#fbbf24', '#4ade80', '#8ab4f8
 export const hasCredentials = (h: HostItem) =>
   !!h.identityId || !!h.keyId || (h.method === 'password' ? !!h.password : !!h.key)
 
-interface State {
-  unlocked: boolean
-  entries: Entry[]
-  error?: string
-}
 
 const DEFAULT_SNIPPETS: SnippetItem[] = [
   { kind: 'snippet', name: 'Disk usage', command: 'df -h' },
@@ -84,26 +80,60 @@ const DEFAULT_SNIPPETS: SnippetItem[] = [
 
 const hostPort = (host: string, port: number) => `${host.toLowerCase()}:${port}`
 
+export const PERSONAL = 'personal'
+
+export type Role = 'owner' | 'admin' | 'member' | 'viewer'
+
+export interface VaultInfo {
+  id: string
+  name: string
+  role: Role
+  writable: boolean
+  error?: string
+}
+
+// All open vaults (personal + teams) share one subscription and one merged snapshot.
+const listeners = new Set<() => void>()
+let snapshot: { unlocked: boolean; entries: Entry[]; vaults: VaultInfo[]; error?: string } = { unlocked: false, entries: [], vaults: [] }
+
+function publish() {
+  const all = [vault, ...teamVaults.values()]
+  snapshot = {
+    unlocked: vault.isOpen(),
+    entries: all.flatMap((v) => v.entries()),
+    vaults: all.filter((v) => v.isOpen() || v.error).map((v) => v.info()),
+    error: vault.error,
+  }
+  listeners.forEach((l) => l())
+}
+
 class Vault {
   private key: CryptoKey | null = null
   private items = new Map<string, Entry>()
   private revision = 0
   private syncing = false
   private timer = 0
-  private state: State = { unlocked: false, entries: [] }
-  private listeners = new Set<() => void>()
+  error?: string
   /** Called when the server says the session is gone. */
   onSignedOut: () => void = () => {}
+  /** Called when the gateway's 2FA policy blocks this account. */
 
+  constructor(readonly id: string, private base: string, public name: string, public role: Role) {}
+
+  isOpen = () => !!this.key
+  entries = () => [...this.items.values()]
+  info = (): VaultInfo => ({ id: this.id, name: this.name, role: this.role, writable: this.role !== 'viewer', error: this.error })
+
+  // Kept for callers that only care about the personal vault.
   subscribe = (l: () => void) => {
-    this.listeners.add(l)
-    return () => { this.listeners.delete(l) }
+    listeners.add(l)
+    return () => { listeners.delete(l) }
   }
-  getState = () => this.state
+  getState = () => ({ unlocked: this.isOpen(), entries: this.entries(), error: this.error })
 
   private emit(error?: string) {
-    this.state = { unlocked: !!this.key, entries: [...this.items.values()], error }
-    this.listeners.forEach((l) => l())
+    this.error = error
+    publish()
   }
 
   private onFocus = () => this.sync()
@@ -131,10 +161,11 @@ class Vault {
     if (!key || this.syncing) return
     this.syncing = true
     try {
-      const res = await api<{ items: { id: string; data?: string; revision: number; deleted?: boolean }[]; revision: number }>(
-        'GET', `/api/vault?since=${this.revision}`,
+      const res = await api<{ items: { id: string; data?: string; revision: number; deleted?: boolean }[]; revision: number; role?: Role }>(
+        'GET', `${this.base}?since=${this.revision}`,
       )
       if (key !== this.key) return // locked while the request was in flight
+      if (res.role) this.role = res.role
       for (const it of res.items) {
         if (it.deleted || !it.data) {
           this.items.delete(it.id)
@@ -142,7 +173,7 @@ class Vault {
         }
         try {
           const body = await decryptItem<ItemBody>(key, it.id, it.data)
-          this.items.set(it.id, { ...body, id: it.id })
+          this.items.set(it.id, { ...body, id: it.id, vault: this.id })
         } catch {
           console.warn('vault: skipping item that fails to decrypt', it.id)
         }
@@ -151,6 +182,7 @@ class Vault {
       this.emit()
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) this.onSignedOut()
+      else if (e instanceof ApiError && e.code === 'TOTP_SETUP_REQUIRED') return // the 2FA setup gate takes over
       else this.emit(e instanceof Error ? e.message : 'Sync failed')
     } finally {
       this.syncing = false
@@ -160,11 +192,14 @@ class Vault {
   async put(body: ItemBody, id: string = crypto.randomUUID()): Promise<string> {
     const key = this.key
     if (!key) throw new Error('Vault is locked.')
+    if (this.role === 'viewer') throw new Error(`You can only view ${this.name}.`)
+    // Never store which vault an item came from inside the item itself.
+    const { id: _id, vault: _v, ...clean } = body as ItemBody & { id?: string; vault?: string }
     // Optimistic: callers (e.g. host-key trust) read it back synchronously.
-    this.items.set(id, { ...body, id })
-    this.emit()
-    const data = await encryptItem(key, id, body)
-    const { revision } = await api<{ revision: number }>('PUT', `/api/vault/items/${id}`, { data })
+    this.items.set(id, { ...(clean as ItemBody), id, vault: this.id })
+    this.emit(this.error)
+    const data = await encryptItem(key, id, clean)
+    const { revision } = await api<{ revision: number }>('PUT', `${this.base}/items/${id}`, { data })
     // Only advance the cursor when nothing from another device landed in between.
     if (revision === this.revision + 1) this.revision = revision
     return id
@@ -173,8 +208,8 @@ class Vault {
   async remove(id: string) {
     if (!this.key) return
     this.items.delete(id)
-    this.emit()
-    const { revision } = await api<{ revision: number }>('DELETE', `/api/vault/items/${id}`)
+    this.emit(this.error)
+    const { revision } = await api<{ revision: number }>('DELETE', `${this.base}/items/${id}`)
     if (revision === this.revision + 1) this.revision = revision
   }
 
@@ -217,23 +252,79 @@ class Vault {
   }
 }
 
-export const vault = new Vault()
+export const vault = new Vault(PERSONAL, '/api/vault', 'Personal', 'owner')
+
+// ── team vaults ──
+
+const teamVaults = new Map<string, Vault>()
+
+export interface TeamVaultSpec {
+  id: string
+  name: string
+  role: Role
+  key: CryptoKey
+}
+
+/** Opens new team vaults and closes ones the user no longer has. */
+export async function syncTeamVaults(specs: TeamVaultSpec[], errors: Record<string, string> = {}) {
+  const keep = new Set(specs.map((s) => s.id))
+  for (const [id, v] of teamVaults) {
+    if (!keep.has(id) && !errors[id]) {
+      v.lock()
+      teamVaults.delete(id)
+    }
+  }
+  for (const s of specs) {
+    const v = teamVaults.get(s.id)
+    if (v) {
+      v.name = s.name
+      v.role = s.role
+      continue
+    }
+    const nv = new Vault(s.id, `/api/teams/${s.id}/vault`, s.name, s.role)
+    teamVaults.set(s.id, nv)
+    await nv.open(s.key)
+  }
+  // Teams we can't open (e.g. their 2FA rule) still show, with the reason.
+  for (const [id, msg] of Object.entries(errors)) {
+    if (!teamVaults.has(id)) {
+      const ev = new Vault(id, `/api/teams/${id}/vault`, msg.split('\n')[0], 'viewer')
+      ev.error = msg.split('\n')[1] ?? msg
+      teamVaults.set(id, ev)
+    }
+  }
+  publish()
+}
+
+export function closeTeamVaults() {
+  teamVaults.forEach((v) => v.lock())
+  teamVaults.clear()
+  publish()
+}
+
+export function vaultFor(id: string | undefined): Vault {
+  return (id && teamVaults.get(id)) || vault
+}
 
 export function useVault() {
-  const s = useSyncExternalStore(vault.subscribe, vault.getState)
+  const s = useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l) } }, () => snapshot)
   const byLabel = (a: { label: string }, b: { label: string }) => a.label.localeCompare(b.label)
   return {
     unlocked: s.unlocked,
     error: s.error,
+    vaults: s.vaults,
     hosts: s.entries.filter((e): e is SavedHost => e.kind === 'host').sort((a, b) => (a.label || a.host).localeCompare(b.label || b.host)),
     snippets: s.entries.filter((e): e is Snippet => e.kind === 'snippet'),
     keys: s.entries.filter((e): e is SavedKey => e.kind === 'key').sort(byLabel),
     identities: s.entries.filter((e): e is Identity => e.kind === 'identity').sort(byLabel),
+    knownHosts: s.entries.filter((e) => e.kind === 'knownHost'),
   }
 }
 
-// Trusted host keys, read synchronously by the terminal.
-export const getKnownHost = (host: string, port: number) => vault.knownHost(host, port)?.fingerprint
+// Trusted host keys, read synchronously by the terminal. Personal trust wins;
+// keys a teammate trusted (shared with the host) count too.
+export const getKnownHost = (host: string, port: number) =>
+  (vault.knownHost(host, port) ?? [...teamVaults.values()].map((v) => v.knownHost(host, port)).find(Boolean))?.fingerprint
 
 export function saveKnownHost(host: string, port: number, fingerprint: string) {
   vault.put({ kind: 'knownHost', hostPort: hostPort(host, port), fingerprint }, vault.knownHost(host, port)?.id).catch(() => {})
@@ -242,4 +333,8 @@ export function saveKnownHost(host: string, port: number, fingerprint: string) {
 export function forgetKnownHost(host: string, port: number) {
   const e = vault.knownHost(host, port)
   if (e) vault.remove(e.id).catch(() => {})
+  for (const v of teamVaults.values()) {
+    const t = v.knownHost(host, port)
+    if (t && v.role !== 'viewer') v.remove(t.id).catch(() => {})
+  }
 }

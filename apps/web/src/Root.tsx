@@ -1,10 +1,12 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
-import { api, type SessionInfo, type SignedIn } from './lib/api'
+import { api, onPolicyBlock, type SessionInfo, type SignedIn } from './lib/api'
 import { logout, type Opened } from './lib/account'
 import { credentialCache } from './lib/live'
 import { getPrefs, type Prefs } from './lib/storage'
 import { vault } from './lib/vault'
+import { refreshTeams, startTeams, stopTeams } from './lib/teams'
 import { AuthScreen, LockScreen, RecoveryCode } from './components/AuthScreens'
+import { TwoFactor } from './components/AccountDialog'
 import { Logo } from './components/icons'
 
 const App = lazy(() => import('./App').then((m) => ({ default: m.App })))
@@ -16,15 +18,23 @@ type Phase =
   // App stays mounted while locked so open SSH sessions survive a screen lock.
   | { k: 'app'; session: SignedIn; locked: boolean; mounted: boolean; recoveryCode?: string }
 
+// An invitation link (/?invite=…) opens sign-up for one email address.
+const inviteToken = new URLSearchParams(location.search).get('invite') ?? undefined
+const clearInvite = () => history.replaceState(null, '', location.pathname)
+
 export function Root() {
   const [phase, setPhase] = useState<Phase>({ k: 'loading' })
+  const [policyBlock, setPolicyBlock] = useState(false)
   const [prefs, setPrefs] = useState<Prefs>(getPrefs)
   const [notice, setNotice] = useState('')
 
   const load = useCallback(async () => {
     try {
       const s = await api<SessionInfo>('GET', '/api/session')
-      setPhase(s.user && s.keys ? { k: 'app', session: { user: s.user, keys: s.keys }, locked: true, mounted: false } : { k: 'auth', signupOpen: s.signupOpen })
+      if (s.user && inviteToken) clearInvite() // invitations are for new accounts
+      setPhase(s.user && s.keys
+        ? { k: 'app', session: { user: s.user, keys: s.keys, keypair: s.keypair, policy: s.policy }, locked: true, mounted: false }
+        : { k: 'auth', signupOpen: s.signupOpen })
     } catch (e) {
       setPhase({ k: 'offline', msg: e instanceof Error ? e.message : 'Gateway unreachable.' })
     }
@@ -33,22 +43,31 @@ export function Root() {
   useEffect(() => {
     load()
     vault.onSignedOut = () => location.reload()
+    onPolicyBlock(() => setPolicyBlock(true))
   }, [load])
 
-  const openVault = async (key: CryptoKey, isNew = false) => {
+  const openVault = async (key: CryptoKey, session: SignedIn, isNew = false): Promise<SignedIn> => {
     await vault.open(key)
     const imported = await vault.importLegacy().catch(() => 0)
     if (isNew && !vault.getState().entries.some((e) => e.kind === 'snippet')) await vault.seedDefaults().catch(() => {})
     if (imported) setNotice(`Moved ${imported} saved host${imported === 1 ? '' : 's'} from this browser into your vault.`)
+    try {
+      return await startTeams(session, key)
+    } catch (e) {
+      console.warn('teams unavailable', e) // e.g. blocked until 2FA is set up
+      return session
+    }
   }
 
   const opened = async (o: Opened, isNew: boolean) => {
-    await openVault(o.vaultKey, isNew)
-    setPhase({ k: 'app', session: o.session, locked: false, mounted: true, recoveryCode: o.recoveryCode })
+    if (inviteToken) clearInvite()
+    const session = await openVault(o.vaultKey, o.session, isNew)
+    setPhase({ k: 'app', session, locked: false, mounted: true, recoveryCode: o.recoveryCode })
   }
 
   const lock = useCallback(() => {
     vault.lock()
+    stopTeams()
     credentialCache.clear()
     setPhase((p) => (p.k === 'app' ? { ...p, locked: true } : p))
   }, [])
@@ -97,7 +116,10 @@ export function Root() {
       </div>
     )
   }
-  if (phase.k === 'auth') return <AuthScreen signupOpen={phase.signupOpen} onOpened={opened} />
+  if (phase.k === 'auth') return <AuthScreen signupOpen={phase.signupOpen} invite={inviteToken} onOpened={opened} />
+
+  const s = phase.session
+  const needs2fa = !s.user.totp && (policyBlock || !!s.policy?.require2fa)
 
   return (
     <>
@@ -119,11 +141,28 @@ export function Root() {
           email={phase.session.user.email}
           keys={phase.session.keys}
           onUnlocked={async (key) => {
-            await openVault(key)
-            setPhase((p) => (p.k === 'app' ? { ...p, locked: false, mounted: true } : p))
+            const session = await openVault(key, phase.session)
+            setPhase((p) => (p.k === 'app' ? { ...p, session, locked: false, mounted: true } : p))
           }}
           onLogout={signOut}
         />
+      )}
+      {!phase.locked && !phase.recoveryCode && needs2fa && (
+        <div className="lock-overlay">
+          <div className="auth-shell">
+            <div className="auth-card gate">
+              <h1>Set up two-factor sign-in</h1>
+              <p className="sub">This gateway's admin requires it for every account. Your vault and SSH open once it's on.</p>
+              <TwoFactor session={s} onSession={(next) => {
+                setPolicyBlock(false)
+                setPhase((p) => (p.k === 'app' ? { ...p, session: next } : p))
+                vault.sync()
+                refreshTeams().catch(() => {})
+              }} />
+              <div className="auth-links"><button className="link" onClick={signOut}>Sign out</button></div>
+            </div>
+          </div>
+        </div>
       )}
       {!phase.locked && phase.recoveryCode && (
         <RecoveryCode code={phase.recoveryCode} onDone={() => setPhase((p) => (p.k === 'app' ? { ...p, recoveryCode: undefined } : p))} />

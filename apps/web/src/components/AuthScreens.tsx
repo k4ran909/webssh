@@ -1,4 +1,5 @@
-import { useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { api } from '../lib/api'
 import { ApiError, type Keys } from '../lib/api'
 import { login, prepareLogin, recover, signup, unlock, type Opened } from '../lib/account'
 import type { PasswordKeys } from '../lib/crypto'
@@ -39,8 +40,9 @@ export function StrengthMeter({ pw }: { pw: string }) {
 
 type Mode = 'login' | 'signup' | 'recover'
 
-export function AuthScreen({ signupOpen, onOpened }: { signupOpen: boolean; onOpened: (o: Opened, isNew: boolean) => void }) {
-  const [mode, setMode] = useState<Mode>(signupOpen ? 'signup' : 'login')
+export function AuthScreen({ signupOpen, invite, onOpened }: { signupOpen: boolean; invite?: string; onOpened: (o: Opened, isNew: boolean) => void }) {
+  const [mode, setMode] = useState<Mode>(signupOpen || invite ? 'signup' : 'login')
+  const [invitation, setInvitation] = useState<{ email: string; team?: string } | null>(null)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -50,6 +52,15 @@ export function AuthScreen({ signupOpen, onOpened }: { signupOpen: boolean; onOp
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const prepared = useRef<PasswordKeys | null>(null)
+
+  useEffect(() => {
+    if (!invite) return
+    api<{ email: string; team?: string }>('GET', `/api/invites/${encodeURIComponent(invite)}`).then(
+      (inv) => { setInvitation(inv); setEmail(inv.email) },
+      () => { setError('This invitation is invalid or has expired. Ask for a new one.'); if (!signupOpen) setMode('login') },
+    )
+  }, [invite, signupOpen])
+  const invited = mode === 'signup' && !!invitation
 
   const switchMode = (m: Mode) => {
     setMode(m)
@@ -79,7 +90,7 @@ export function AuthScreen({ signupOpen, onOpened }: { signupOpen: boolean; onOp
         onOpened(await login(em, prepared.current, totp), false)
       } else if (mode === 'signup') {
         setBusy('Creating your encrypted vault…')
-        onOpened(await signup(em, password), true)
+        onOpened(await signup(em, password, invited ? invite : undefined), true)
       } else {
         setBusy('Recovering vault…')
         onOpened(await recover(em, code, password), false)
@@ -96,7 +107,7 @@ export function AuthScreen({ signupOpen, onOpened }: { signupOpen: boolean; onOp
     }
   }
 
-  const titles = { login: 'Sign in', signup: signupOpen ? 'Create your account' : 'Create account', recover: 'Recover your vault' }
+  const titles = { login: 'Sign in', signup: invited ? (invitation!.team ? `Join ${invitation!.team}` : 'Create your account') : signupOpen ? 'Create your account' : 'Create account', recover: 'Recover your vault' }
   const subs = {
     login: 'Your master password unlocks your encrypted vault.',
     signup: 'Your master password encrypts your vault in this browser. The server never sees it.',
@@ -113,7 +124,7 @@ export function AuthScreen({ signupOpen, onOpened }: { signupOpen: boolean; onOp
           <>
             <label className="fld">
               <span>Email</span>
-              <input className="input" type="email" autoComplete="username" value={email} autoFocus
+              <input className="input" type="email" autoComplete="username" value={email} autoFocus={!invited} readOnly={invited}
                 onChange={(e) => { setEmail(e.target.value); prepared.current = null }} />
             </label>
             {mode === 'recover' && (
@@ -161,7 +172,7 @@ export function AuthScreen({ signupOpen, onOpened }: { signupOpen: boolean; onOp
         ) : (
           <>
             {mode !== 'login' && <button className="link" onClick={() => switchMode('login')}>I have an account</button>}
-            {mode !== 'signup' && signupOpen && <button className="link" onClick={() => switchMode('signup')}>Create account</button>}
+            {mode !== 'signup' && (signupOpen || invitation) && <button className="link" onClick={() => switchMode('signup')}>Create account</button>}
             {mode !== 'recover' && <button className="link" onClick={() => switchMode('recover')}>Forgot password?</button>}
           </>
         )}

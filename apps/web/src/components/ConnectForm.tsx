@@ -1,6 +1,6 @@
 import { useRef, useState, type FormEvent } from 'react'
 import type { Auth } from '../lib/protocol'
-import { HOST_COLORS, type AuthMethod, type Identity, type SavedHost, type SavedKey, type Snippet } from '../lib/vault'
+import { HOST_COLORS, PERSONAL, type AuthMethod, type Identity, type SavedHost, type SavedKey, type Snippet, type VaultInfo } from '../lib/vault'
 import { Logo } from './icons'
 
 const MAX_KEY_BYTES = 64 * 1024
@@ -39,6 +39,8 @@ export interface ConnectInitial {
   jumpHostId?: string
   startupSnippetId?: string
   agent?: boolean
+  /** Which vault the host lives in (personal or a team id). */
+  vault?: string
   /** Editing a saved host that already has inline credentials. */
   hasCreds?: boolean
 }
@@ -62,9 +64,11 @@ export interface ConnectResult {
   jumpHostId?: string
   startupSnippetId?: string
   agent?: boolean
+  vault: string
 }
 
 export interface VaultChoices {
+  vaults?: VaultInfo[]
   hosts: SavedHost[]
   keys: SavedKey[]
   identities: Identity[]
@@ -107,6 +111,8 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
   const [jumpHostId, setJumpHostId] = useState(initial.jumpHostId ?? '')
   const [startupSnippetId, setStartupSnippetId] = useState(initial.startupSnippetId ?? '')
   const [agent, setAgent] = useState(!!initial.agent)
+  const [vaultId, setVaultId] = useState(initial.vault ?? PERSONAL)
+  const vaultChoices = (choices.vaults ?? []).filter((v) => v.writable && !v.error)
   const [more, setMore] = useState(!!(initial.group || initial.jumpHostId || initial.startupSnippetId || initial.agent))
   const [error, setError] = useState('')
   const [joined, setJoined] = useState(false)
@@ -145,7 +151,7 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
       host: parsed.host, port: finalPort, user: finalUser, method: source === 'password' ? 'password' : 'key', auth, ref,
       save, storeCreds: saving ? given : save && storeCreds, clearCreds,
       label: label.trim(), color, group: group.trim() || undefined,
-      jumpHostId: jumpHostId || undefined, startupSnippetId: startupSnippetId || undefined, agent,
+      jumpHostId: jumpHostId || undefined, startupSnippetId: startupSnippetId || undefined, agent, vault: vaultId,
     })
   }
 
@@ -236,6 +242,14 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
         <label className="check indent">
           <input type="checkbox" checked={storeCreds} onChange={(e) => setStoreCreds(e.target.checked)} />
           <span>Remember {source === 'password' ? 'password' : 'key'} <em className="hint">(end-to-end encrypted)</em></span>
+        </label>
+      )}
+      {save && vaultChoices.length > 1 && (
+        <label className="fld">
+          <span>Vault {vaultId !== (initial.vault ?? PERSONAL) && <em className="hint">(its keys, jump host and snippet are copied along)</em>}</span>
+          <select className="input select wide" value={vaultId} onChange={(e) => setVaultId(e.target.value)}>
+            {vaultChoices.map((v) => <option key={v.id} value={v.id}>{v.id === PERSONAL ? 'Personal (only you)' : `Team · ${v.name}`}</option>)}
+          </select>
         </label>
       )}
       {save && (

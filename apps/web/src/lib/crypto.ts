@@ -163,3 +163,67 @@ export const encryptItem = (vaultKey: CryptoKey, id: string, body: unknown) =>
 export async function decryptItem<T>(vaultKey: CryptoKey, id: string, data: string): Promise<T> {
   return JSON.parse(dec.decode(await open(vaultKey, data, 'webssh/v1/item/' + id))) as T
 }
+
+// ── sharing (teams) ──
+//
+//   Each user has an ECDH P-256 keypair. The public key (SPKI) is on the
+//   server; the private key is stored there encrypted with the user's vault key.
+//   A team key is a random AES-256 key, wrapped to a member as:
+//     eph = new ECDH keypair; k = HKDF(ECDH(eph, member pub), "webssh/v1/team-key")
+//     wrapped = base64(SPKI(eph.pub)) "." AES-GCM(k, team key)
+
+const ECDH = { name: 'ECDH', namedCurve: 'P-256' } as const
+const SHARING_KEY_AAD = 'webssh/v1/sharing-key'
+const TEAM_KEY_AAD = 'webssh/v1/team-key'
+
+export interface SharingKeys {
+  publicKey: string
+  privateKey: CryptoKey
+}
+
+export async function newSharingKeypair(vaultKey: CryptoKey): Promise<SharingKeys & { encPrivateKey: string }> {
+  const kp = (await crypto.subtle.generateKey(ECDH, true, ['deriveBits'])) as CryptoKeyPair
+  const spki = new Uint8Array(await crypto.subtle.exportKey('spki', kp.publicKey)) as Bytes
+  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', kp.privateKey)) as Bytes
+  const encPrivateKey = await seal(vaultKey, pkcs8, SHARING_KEY_AAD)
+  const privateKey = await crypto.subtle.importKey('pkcs8', pkcs8, ECDH, false, ['deriveBits'])
+  pkcs8.fill(0)
+  return { publicKey: toB64(spki), encPrivateKey, privateKey }
+}
+
+export async function loadSharingKey(vaultKey: CryptoKey, encPrivateKey: string): Promise<CryptoKey> {
+  const pkcs8 = await open(vaultKey, encPrivateKey, SHARING_KEY_AAD)
+  const key = await crypto.subtle.importKey('pkcs8', pkcs8, ECDH, false, ['deriveBits'])
+  pkcs8.fill(0)
+  return key
+}
+
+async function teamWrapKey(priv: CryptoKey, pubSpki: Bytes): Promise<CryptoKey> {
+  const pub = await crypto.subtle.importKey('spki', pubSpki, ECDH, false, [])
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: pub }, priv, 256)) as Bytes
+  const k = await hkdf(shared, TEAM_KEY_AAD)
+  shared.fill(0)
+  const key = await aesKey(k)
+  k.fill(0)
+  return key
+}
+
+export async function wrapTeamKey(rawTeamKey: Bytes, recipientPublicKey: string): Promise<string> {
+  const eph = (await crypto.subtle.generateKey(ECDH, true, ['deriveBits'])) as CryptoKeyPair
+  const ephPub = new Uint8Array(await crypto.subtle.exportKey('spki', eph.publicKey)) as Bytes
+  const k = await teamWrapKey(eph.privateKey, fromB64(recipientPublicKey) as Bytes)
+  return toB64(ephPub) + '.' + (await seal(k, rawTeamKey, TEAM_KEY_AAD))
+}
+
+export async function unwrapTeamKey(myPrivateKey: CryptoKey, wrapped: string): Promise<Bytes> {
+  const [epk, ct] = wrapped.split('.')
+  if (!epk || !ct) throw new Error('Malformed team key.')
+  const k = await teamWrapKey(myPrivateKey, fromB64(epk) as Bytes)
+  return open(k, ct, TEAM_KEY_AAD)
+}
+
+/** Short, human-comparable fingerprint of a sharing public key. */
+export async function keyFingerprint(publicKey: string): Promise<string> {
+  const h = new Uint8Array(await crypto.subtle.digest('SHA-256', fromB64(publicKey) as Bytes))
+  return [...h.slice(0, 12)].map((b) => b.toString(16).padStart(2, '0')).join('').match(/.{4}/g)!.join(' ')
+}

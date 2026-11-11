@@ -92,7 +92,7 @@ function useAction() {
   return { busy, error, done, run }
 }
 
-function TwoFactor({ session, onSession }: { session: SignedIn; onSession: (s: SignedIn) => void }) {
+export function TwoFactor({ session, onSession }: { session: SignedIn; onSession: (s: SignedIn) => void }) {
   const [setup, setSetup] = useState<{ secret: string; qr: string } | null>(null)
   const [code, setCode] = useState('')
   const [password, setPassword] = useState('')
@@ -253,7 +253,10 @@ function Activity() {
   if (!events) return <p className="pop-sub">Loading…</p>
   return (
     <div className="activity">
-      <p className="pop-sub" style={{ marginBottom: 10 }}>Sign-ins and SSH connections for your account. Terminal contents are never recorded.</p>
+      <div className="audit-head">
+        <p className="pop-sub">Sign-ins and SSH connections for your account. Terminal contents are never recorded.</p>
+        <a className="btn" href="/api/audit?format=csv" download><Icon name="download" size={13} /> Export CSV</a>
+      </div>
       {events.map((e) => {
         const d = describe(e)
         return (
