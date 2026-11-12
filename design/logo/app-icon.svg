@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="webssh">
+  <rect width="512" height="512" rx="112" fill="#0a0a0a"/>
+  <g transform="translate(108.1 105.65)" fill="#fafafa">
+    <path d="M151.8 0H168.4C168.4 63.4 195.7 127.4 295.8 127.4V144H155.8A4 4 0 0 1 151.8 140Z"/>
+    <path d="M144 300.7H127.4C127.4 237.3 100.1 173.3 0 173.3V156.7H140A4 4 0 0 1 144 160.7Z"/>
+  </g>
+</svg>

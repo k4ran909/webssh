@@ -264,7 +264,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .pane::before { right: -7px; top: -7px; transform: rotate(180deg) translate(-4px, 4px); }
 .pane.focus::before { opacity: 1; transform: rotate(180deg); }
 .pane.focus::after { opacity: 1; transform: none; }
-:root { --piece: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='156 0 144 144'%3E%3Cpath d='M156 0h16c0 92 32 128 128 128v16H156z'/%3E%3C/svg%3E"); }
+:root { --piece: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 144 144'%3E%3Cpath d='M0 0H16.6C16.6 63.4 43.9 127.4 144 127.4V144H4A4 4 0 0 1 0 140Z'/%3E%3C/svg%3E"); }
 
 .pane-bar { display: flex; align-items: center; gap: 4px; height: 38px; padding: 0 6px 0 14px; border-bottom: 1px solid #1c1c1c; color: #8a8a8a; flex: none; }
 .pane-bar .title { flex: 1; font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -364,9 +364,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 <!-- Unlock -->
 <section id="unlock">
   <form class="unlock-card" id="unlockForm" autocomplete="off">
-    <svg class="mark apart" id="unlockMark" viewBox="0 0 300 300" fill="currentColor" aria-hidden="true">
-      <g class="a"><path d="M156 0h16c0 92 32 128 128 128v16H156z"/></g>
-      <g class="b"><path d="M156 0h16c0 92 32 128 128 128v16H156z" transform="rotate(180 150 150)"/></g>
+    <svg class="mark apart" id="unlockMark" viewBox="0 0 295.8 300.7" fill="currentColor" aria-hidden="true">
+      <g class="a"><path d="M151.8 0H168.4C168.4 63.4 195.7 127.4 295.8 127.4V144H155.8A4 4 0 0 1 151.8 140Z"/></g>
+      <g class="b"><path d="M144 300.7H127.4C127.4 237.3 100.1 173.3 0 173.3V156.7H140A4 4 0 0 1 144 160.7Z"/></g>
     </svg>
     <h1>Unlock your vault</h1>
     <p>Hosts and keys are decrypted on this device only.</p>
@@ -384,9 +384,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 <div id="app">
   <aside id="side">
     <div class="brand">
-      <svg class="mark" viewBox="0 0 300 300" fill="currentColor" aria-hidden="true">
-        <path d="M156 0h16c0 92 32 128 128 128v16H156z"/>
-        <path d="M156 0h16c0 92 32 128 128 128v16H156z" transform="rotate(180 150 150)"/>
+      <svg class="mark" viewBox="0 0 295.8 300.7" fill="currentColor" aria-hidden="true">
+        <path d="M151.8 0H168.4C168.4 63.4 195.7 127.4 295.8 127.4V144H155.8A4 4 0 0 1 151.8 140Z"/>
+        <path d="M144 300.7H127.4C127.4 237.3 100.1 173.3 0 173.3V156.7H140A4 4 0 0 1 144 160.7Z"/>
       </svg>
       <span>webssh</span>
     </div>

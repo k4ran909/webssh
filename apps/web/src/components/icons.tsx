@@ -1,10 +1,13 @@
-const PIECE = 'M156 0h16c0 92 32 128 128 128v16H156z'
+// The webssh mark (design/logo/mark.svg): two corner pieces, the second a
+// 180° rotation of the first.
+const PIECE_A = 'M151.8 0H168.4C168.4 63.4 195.7 127.4 295.8 127.4V144H155.8A4 4 0 0 1 151.8 140Z'
+const PIECE_B = 'M144 300.7H127.4C127.4 237.3 100.1 173.3 0 173.3V156.7H140A4 4 0 0 1 144 160.7Z'
 
 export function Logo({ size = 20, apart = false }: { size?: number; apart?: boolean }) {
   return (
-    <svg className={apart ? 'mark apart' : 'mark'} width={size} height={size} viewBox="0 0 300 300" fill="currentColor" aria-hidden>
-      <g className="a"><path d={PIECE} /></g>
-      <g className="b"><path d={PIECE} transform="rotate(180 150 150)" /></g>
+    <svg className={apart ? 'mark apart' : 'mark'} width={size} height={size} viewBox="0 0 295.8 300.7" fill="currentColor" aria-hidden>
+      <g className="a"><path d={PIECE_A} /></g>
+      <g className="b"><path d={PIECE_B} /></g>
     </svg>
   )
 }

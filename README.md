@@ -1,81 +1,86 @@
-# webssh
+<p align="center">
+  <img src="design/logo/banner.png" alt="webssh — the SSH client that lives in your browser" width="100%">
+</p>
 
-A self-hosted, browser-based SSH client: a Go gateway bridges WebSocket ↔ SSH, and a React + xterm.js frontend renders the terminal. Hosts, saved credentials, snippets and trusted host keys live in an end-to-end encrypted vault. "webssh" is a placeholder name.
+<p align="center">
+  <a href="#quick-start"><b>Quick start</b></a> ·
+  <a href="#features"><b>Features</b></a> ·
+  <a href="#security-model"><b>Security</b></a> ·
+  <a href="#architecture"><b>Architecture</b></a> ·
+  <a href="docs/PLAN.md"><b>Roadmap</b></a>
+</p>
 
-**Status: Phase 5 plus the Termius parity pack (session sharing, SOCKS and remote forwarding, Telnet, autocomplete, AI commands, team key rotation) on top of Phases 0–4.** See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [design/THEME.md](design/THEME.md) for the visual system.
+<p align="center">
+  <img alt="Go 1.26" src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white">
+  <img alt="React 19" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white">
+  <img alt="Self-hosted" src="https://img.shields.io/badge/self--hosted-single%20binary-0a0a0a">
+  <img alt="End-to-end encrypted vault" src="https://img.shields.io/badge/vault-end--to--end%20encrypted-0a0a0a">
+</p>
+
+**webssh** is a self-hosted SSH client you use from any browser. A single Go binary serves the app and bridges your browser to your servers. Your hosts, keys, passwords and snippets live in a vault that is encrypted in the browser before it is ever synced, so the server stores only ciphertext.
+
+- **Nothing to install.** Open a tab on your laptop, a borrowed machine or your phone, unlock your vault, and connect.
+- **Yours to run.** One binary (or one Docker command) on your own server. No accounts with anyone else, no telemetry.
+- **Built for teams.** Shared, end-to-end encrypted vaults, roles, live session sharing, and an audit log for the admin.
+
+---
 
 ## Features
 
-**Accounts and vault**
-- **Zero-knowledge vault.** Your master password never leaves the browser. Hosts (with optional saved passwords or keys), snippets and trusted host keys are encrypted on your device with AES-256-GCM before being synced.
-- **The first account is the gateway admin.** Sign-up closes after it, unless you set `WEBSSH_OPEN_SIGNUP=true` or send someone an invitation.
-- **Two-factor sign-in (TOTP)** with any authenticator app, with replay protection.
-- **Recovery code.** Shown once at sign-up, it's the only way back in if you forget the master password. Using it issues a new one.
-- **Auto-lock** after inactivity (default 15 minutes) and a manual lock. Open SSH sessions keep running behind the lock screen.
-- **Activity log** of sign-ins, security changes and SSH connections (destination, duration, bytes). It never records terminal contents.
-- **Change master password** re-wraps the vault key and signs out your other devices.
+### Terminal and workspace
+- **Windows or tabs.** Drag, resize, snap, minimize and maximize sessions like desktop windows, split a window right or down, or switch to tabs. Phones always use tabs, with an extra-keys bar (Esc, Tab, Ctrl, Alt, arrows).
+- **Command palette** (`Ctrl+Shift+K`) to connect, switch sessions, run snippets and change settings.
+- **Command suggestions** from your history and snippets as you type; `Ctrl+Space` accepts. History is kept in your encrypted vault.
+- **Broadcast input** to every open session, **find in terminal**, snippets with run-on-connect, session **recording** (asciicast) with a built-in player, light and dark themes, and an installable app (PWA).
+- **Session resume.** If your Wi-Fi drops or your laptop sleeps, the session keeps running for 5 minutes and reattaches on its own, replaying what you missed.
 
-**Teams**
-- **Shared vaults.** Create a team, add people, and pick the team as a host's vault to share it. The host's identity or key, jump hosts, startup snippet and trusted host key come along, so teammates can connect without asking you for anything. Team vaults are end-to-end encrypted like personal ones.
-- **Confirm by fingerprint.** New members wait until an owner or admin compares their key fingerprint (shown in Teams) and confirms them; only then is the team key encrypted for them.
-- **Roles:** owner, admin, member, and viewer (can connect, can't change anything).
-- **Invitations.** People who already have an account are added straight away; anyone else gets a 7-day sign-up link for their email address.
-- **Policies:** a team can require 2FA to open its vault, and the gateway admin can require 2FA for every account.
-- **Gateway admin:** list and remove accounts, send invitations, set the 2FA policy, and browse or export (CSV) the audit log of every account.
+### Connections
+- **SSH** with password, private key, or keychain identities; **jump hosts** (ProxyJump, up to 4 hops); opt-in **agent forwarding**.
+- **Host keys** are trusted on first use and synced through the vault. A changed key is blocked, with the old and new fingerprints shown side by side.
+- **Telnet** for switches, routers and lab gear.
+- **Import `~/.ssh/config`**, host groups, and colour tags.
 
-**Servers and files**
-- **SFTP panel** beside each terminal, using the same SSH connection (no second login). Browse, upload with progress (drag and drop), download, rename/move, delete, chmod, and edit text files in place. "cd here" moves the shell to the folder you're viewing.
-- **Jump hosts** (ProxyJump): pick a saved host to connect through, chaining up to 4 hops. Each hop has its own host-key check.
-- **Keychain**: reusable keys and identities (username plus password or key). Generate Ed25519 keys in the browser, copy the public key, or install it on the server you're connected to with one click.
-- **Import `~/.ssh/config`**: brings in hosts, users, ports and ProxyJump.
-- **Host groups** and **run-on-connect snippets** per host.
+### Files and forwarding
+- **SFTP panel** beside each terminal, on the same connection: browse, drag-and-drop upload with progress, download, rename, delete, chmod, and edit text files in place.
+- **Port forwarding in the browser** for web apps on the server (dashboards, dev servers), each on its own origin.
+- **Local, SOCKS and remote forwarding** (like `ssh -L`, `-D`, `-R`) through the [companion CLI](#companion-cli), for databases and anything else that isn't a web page.
 
-**Staying connected**
-- **Session resume.** If your Wi-Fi drops or your laptop sleeps, the SSH session keeps running on the gateway for 5 minutes and the terminal reattaches on its own, replaying any output you missed (the last 512 KB).
-- **Port forwarding (HTTP).** Open a web app running on the server (dashboards, dev servers) in your browser through the SSH connection. Each forward gets its own preview port, so it's a separate origin from webssh. For databases and other TCP services, use the companion CLI (below).
-- **Agent forwarding** (opt-in per host) so `git` and `ssh` on the server can use your key.
-- **Session recording** to asciicast files, and a built-in player with speed controls.
-- **Installable app (PWA)**, and an extra-keys bar (Esc, Tab, Ctrl, Alt, arrows) on phones and tablets.
+### Security and privacy
+- **Zero-knowledge vault.** Your master password never leaves the browser; everything in the vault is encrypted with AES-256-GCM before syncing.
+- **End-to-end sessions.** Optionally run the SSH client itself in your browser (WebAssembly), so the gateway only relays encrypted bytes and never sees your password, key or terminal.
+- **Two-factor sign-in** (TOTP), a one-time **recovery code**, auto-lock, and an **activity log** that records connections but never terminal contents.
 
-**End-to-end sessions**
-- **SSH in your browser.** Tick *End-to-end* on a host and the SSH client runs inside the page (Go compiled to WebAssembly, about 2.7 MB, loaded only when needed). The gateway just relays the encrypted connection: it never sees the password, the key, or anything you type or read. Host-key checks, jump hosts, agent forwarding and the file panel all work. Not available in this mode: resuming after a network drop, and port forwarding (the gateway can't see inside the connection).
+### Teams
+- **Shared vaults** with roles (owner, admin, member, viewer). Share a host and its key, jump hosts, snippet and trusted host key come along.
+- **Members are confirmed by key fingerprint**, so a compromised server can't slip in its own key. Removing a member **rotates the team key** automatically.
+- **Live session sharing**: send a link so a teammate can watch your terminal, or work in it with you.
+- **Gateway admin**: invitations, a require-2FA policy, and a CSV-exportable audit log for every account.
 
-**Companion CLI**
-- **TCP forwarding like ssh's -L, -D and -R.** In a window's ⋯ menu choose *Forward a port*, then *Local port* (a database or Redis on the server's side, on a port of your computer), *SOCKS* (a SOCKS5 proxy on your computer that reaches anything the server can), or *Remote* (the server listens on a port and its connections come to a port on your computer, e.g. to show a local dev server). webssh shows a one-line `webssh-cli forward` command; the token in it works only for that forward and stops when you stop it or the session ends.
+### Optional AI helper
+Off by default. When the admin enables it, you can **explain selected terminal output** or **describe a command in words** and get one back to review. Only the text you choose is sent to Claude (Anthropic), and suggested commands are typed in for you to check, never run.
 
-**AI helper (optional, off by default)**
-- **Explain selection.** Select confusing output in a terminal and choose *Explain selection with AI* (window ⋯ menu or the palette). You see exactly what will be sent first; only that text goes to Claude, through the gateway. The gateway admin turns it on with `WEBSSH_AI=true` and an Anthropic API key. The audit log records that you asked and how much text was sent, never the text itself.
+---
 
-**Working together**
-- **Share a live session.** A window's ⋯ menu → *Share session* makes a link. Anyone with an account on your gateway who opens it watches the terminal live, or also types into it if you chose *Watch and type*. You see who is watching and can stop sharing at any time; it also ends with the session. Not for end-to-end sessions.
+## Quick start
 
-**More protocols**
-- **Telnet** for old switches, routers and lab gear: pick *Telnet* in the host form. It isn't encrypted between the gateway and the device, and you log in at the device's own prompt (webssh never stores Telnet passwords).
+### With Docker (recommended)
 
-**Typing faster**
-- **Command suggestions.** As you type, webssh suggests commands from your history and snippets; Ctrl+Space accepts the first (or click one). History lives in your encrypted vault and syncs between devices. Only lines the server echoed back are kept, so passwords typed at a prompt never are; lines starting with a space are skipped, as in shells. Turn it off or clear it in Settings.
-- **Ask AI for a command** (when the AI helper is on): describe what you want, review the suggested command, and type it into the terminal. It's never run for you.
+Point a DNS record at your server, then:
 
-**Workspace**
-- **Window manager.** Each session is a window you can drag, resize from any edge, minimize to the dock, maximize (or double-click the title), and close. **Split right / split down** opens a second session inside the same window's area. Drag a window to the top edge to maximize it, or to the left/right edge to snap it to half the screen. Use Tile or Cascade to arrange everything.
-- **Tabs layout.** Switch between floating windows and tabs without dropping any sessions. Phones always use tabs.
-- **Command palette** (`Ctrl+Shift+K`, or `Ctrl+K` outside a terminal). Connect, switch sessions, run snippets, change layout, theme and font size, lock the vault.
-- **Broadcast input.** Keystrokes from the focused terminal go to every connected session.
-- **Snippets**, **find in terminal** (`Ctrl+Shift+F`), `Alt+1…9` to switch sessions, copy on select, adjustable font size, light/dark theme.
-- **Host keys.** Trust on first use, synced through the vault. A changed key is blocked and shows the old and new fingerprints side by side.
+```bash
+WEBSSH_DOMAIN=ssh.example.com docker compose -f deploy/docker-compose.yml up -d --build
+```
 
-## Requirements
+Caddy obtains a TLS certificate automatically. **Open `https://ssh.example.com` straight away and create your account:** the first account becomes the gateway admin, and sign-up closes after it.
 
-- Go 1.26+
-- Node 20+
+### From source
 
-## Run locally
+Requires **Go 1.26+** and **Node 20+**.
 
 ```bash
 npm --prefix apps/web install
 ```
-
-Build the frontend into the Go binary and run it:
 
 ```bash
 npm run build
@@ -85,17 +90,127 @@ npm run build
 ./bin/webssh
 ```
 
-This also builds `bin/webssh-cli` (the companion CLI) and the WebAssembly SSH client for end-to-end sessions. To build the CLI for another computer, for example a Mac:
+Open <http://127.0.0.1:7022> and create your account. `npm run build` produces `bin/webssh` (the gateway, with the web app embedded) and `bin/webssh-cli` (the companion CLI). Data is stored in `./data` (an SQLite database and `server.key`); back up both.
+
+---
+
+## Companion CLI
+
+Browsers can't open ports on your computer, so `webssh-cli` does it for you, through a session you already have open in webssh.
+
+1. In a session window, open **⋯ → Forward a port** and pick **Local port**, **SOCKS** or **Remote**.
+2. Run the command webssh shows you, for example:
+
+```bash
+WEBSSH_TOKEN=… webssh-cli forward -gateway https://ssh.example.com
+```
+
+| Kind | Like | What it does |
+|---|---|---|
+| Local port | `ssh -L` | A service on the server's side (PostgreSQL, Redis…) appears on a port of your computer. |
+| SOCKS | `ssh -D` | A SOCKS5 proxy on `127.0.0.1:1080`; apps that use it reach anything the server can. |
+| Remote | `ssh -R` | The server listens on a port; its connections arrive at a port on your computer. |
+
+The token works for that one forward only and stops when you stop the forward or the session ends. To build the CLI for another platform, for example Apple Silicon:
 
 ```bash
 GOOS=darwin GOARCH=arm64 go -C server build -o ../bin/webssh-cli-mac ./cmd/webssh-cli
 ```
 
-Open http://127.0.0.1:7022 and create your account. Data goes to `./data` (SQLite + `server.key`); back up both.
+---
 
-### Develop with hot reload
+## Configuration
 
-Run the gateway and the Vite dev server in two terminals. Vite proxies `/api` and `/ws` to the gateway.
+All settings are environment variables.
+
+| Variable | Default | Description |
+|---|---|---|
+| `WEBSSH_ADDR` | `127.0.0.1:7022` | Listen address. The Docker image uses `0.0.0.0:7022`. |
+| `WEBSSH_DATA_DIR` | `data` | Where the SQLite database and `server.key` live. |
+| `WEBSSH_OPEN_SIGNUP` | `false` | Allow sign-ups after the first (admin) account. Invitations work either way. |
+| `WEBSSH_TRUST_PROXY` | `false` | Trust `X-Forwarded-For` / `-Proto` from a reverse proxy. The image sets `1`. |
+| `WEBSSH_ALLOW_PRIVATE` | `true` on loopback | Allow connections to private, loopback and link-local addresses. `false` on any other bind; Compose sets `true` for homelabs. |
+| `WEBSSH_MAX_SESSIONS` | `50` | Concurrent sessions on the gateway. |
+| `WEBSSH_MAX_USER_SESSIONS` | `20` | Concurrent sessions per account. |
+| `WEBSSH_RESUME_MINUTES` | `5` | How long a session waits for its browser to come back. `0` turns resume off. |
+| `WEBSSH_FORWARD_PORTS` | `7100-7109` | Ports for in-browser port forwarding, one forward each. Empty turns it off. |
+| `WEBSSH_ALLOWED_ORIGINS` | none | Extra origins (`host:port`, comma-separated) allowed to call the API. |
+| `WEBSSH_AI` | `false` | Turn on the AI helper. Also needs `ANTHROPIC_API_KEY`. |
+| `WEBSSH_AI_MODEL` | `claude-opus-5-5` | Model the AI helper uses. |
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph Browser
+    UI["React + xterm.js<br/>windows, tabs, SFTP panel"]
+    Vault["Vault crypto<br/>Argon2id · HKDF · AES-GCM"]
+    Wasm["SSH client (WebAssembly)<br/>end-to-end sessions"]
+  end
+  subgraph Gateway["Gateway (single Go binary)"]
+    API["Accounts, vault sync,<br/>teams, audit"]
+    Bridge["WebSocket ↔ SSH bridge<br/>resume, SFTP, sharing"]
+    Relay["TCP relay"]
+    DB[("SQLite")]
+  end
+  CLI["webssh-cli<br/>(your computer)"]
+  Servers["Your servers<br/>SSH · Telnet"]
+
+  UI -- "encrypted vault items" --> API
+  UI -- "terminal over WebSocket" --> Bridge
+  Wasm -- "encrypted SSH bytes" --> Relay
+  CLI -- "forwarded connections" --> Bridge
+  API --- DB
+  Bridge --> Servers
+  Relay --> Servers
+```
+
+- **Gateway sessions** (the default): the gateway is the SSH client, which enables resume, SFTP, port forwarding and session sharing.
+- **End-to-end sessions**: the same SSH code, compiled to WebAssembly, runs in your browser; the gateway only relays the encrypted connection.
+- The SSH client (`internal/sshcore`) and the file API (`internal/sftpweb`) are shared by both, so the two modes behave the same.
+
+---
+
+## Security model
+
+```
+master password ──Argon2id (64 MiB)──▶ master key ──HKDF──┬─▶ auth key  → server stores sha256(salt‖key) to sign you in
+                                                           └─▶ wrap key  → never leaves the browser
+vault key (random, 256-bit) ── wrapped by the wrap key ──▶ server
+vault items ── AES-256-GCM(vault key, aad = item id) ──▶ server (opaque ciphertext)
+```
+
+- **The server never sees** your master password, vault key, saved hosts, credentials, snippets or command history. A copy of the database alone decrypts nothing.
+- **In a gateway session, the gateway sees** credentials and terminal traffic while the session is open, because it is the SSH client. That's why you run it yourself. Use an **end-to-end session** when you don't want even your own gateway to see a connection.
+- **Teams** use a P-256 key pair per account and a random key per team, wrapped for each member. Members are confirmed by comparing fingerprints out of band, and removing a member re-encrypts the team vault under a new key. Change any passwords the removed person could already read.
+
+<details>
+<summary><b>More detail</b></summary>
+
+- **Sign-in:** `HttpOnly`, `SameSite=Strict` session cookies (`Secure` behind TLS); cross-origin state changes are refused; login, recovery and 2FA are rate-limited per IP and per account; unknown emails get a decoy salt, so accounts can't be enumerated.
+- **Admins can't read vaults.** The gateway admin manages accounts and policy, with no way into any vault they aren't a member of.
+- **Host keys** are trusted on first use and synced in the vault; a mismatch is a hard block.
+- **Resume** requires a per-session token usable only by the same account. While detached, the gateway stops reading from the server instead of buffering without limit.
+- **End-to-end sessions:** the gateway records destination, duration and byte counts only. The WebAssembly client is served by your own gateway, so you still trust its code; what you gain is that a compromised gateway *at runtime* sees nothing.
+- **Session sharing:** links are random tokens (stored hashed) that only work for accounts on the same gateway. *Watch and type* lets others run commands as you, so share it with care; it ends when you stop it or the session closes.
+- **Command history** records a line only if the server echoed it (so a password typed at a prompt isn't kept) and never one that starts with a space.
+- **CLI forwards** use a hashed bearer token tied to one forward and one session. Prefer `https`; pass the token via `WEBSSH_TOKEN` to keep it out of shell history.
+- **Telnet** is unencrypted between the gateway and the device; use it only on networks you trust.
+- **Port forwarding** previews run on their own ports (separate origins); webssh cookies are stripped before requests reach the forwarded app.
+- **Agent forwarding** keeps your key in gateway memory for the session's lifetime, so it is opt-in per host.
+- **Egress:** hostnames are resolved once and that exact IP is dialed (no DNS rebinding); private ranges are blocked unless allowed.
+- **AI helper:** off unless enabled; only the text you choose is sent, after you've reviewed it.
+- **Browser:** strict Content-Security-Policy, self-hosted fonts, no third-party scripts; the in-memory vault key is a non-extractable WebCrypto key.
+
+</details>
+
+---
+
+## Development
+
+Run the gateway and the Vite dev server (which proxies `/api` and `/ws` to the gateway) in two terminals, then open <http://localhost:5173>:
 
 ```bash
 npm run dev:server
@@ -105,86 +220,47 @@ npm run dev:server
 npm run dev:web
 ```
 
-Open http://localhost:5173.
-
-### Test
+Run the checks:
 
 ```bash
 npm test
 ```
 
-Runs `go vet`, the API tests (sign-up, login, TOTP, recovery, vault sync, CSRF, rate limits), the gateway integration tests (against an in-process SSH server) and the frontend typecheck.
+This runs `go vet`, the API tests, the gateway integration tests (against an in-process SSH server: auth, host keys, jump hosts, SFTP, resume, forwarding, sharing, Telnet, the end-to-end relay) and the frontend typecheck.
 
-## Deploy (Docker + Caddy)
-
-Point a DNS record at your server, then:
-
-```bash
-WEBSSH_DOMAIN=ssh.example.com docker compose -f deploy/docker-compose.yml up -d --build
-```
-
-Caddy gets a TLS certificate automatically. Open `https://ssh.example.com` right away and create the owner account. Until then, anyone who finds the URL can claim it.
-
-## Configuration
-
-| Variable | Default | |
-|---|---|---|
-| `WEBSSH_ADDR` | `127.0.0.1:7022` | Listen address. Docker image: `0.0.0.0:7022`. |
-| `WEBSSH_DATA_DIR` | `data` | SQLite database and `server.key` (encrypts TOTP seeds). |
-| `WEBSSH_OPEN_SIGNUP` | `false` | Allow sign-ups after the first (owner) account. |
-| `WEBSSH_TRUST_PROXY` | `false` | Trust `X-Forwarded-For`/`-Proto` from a reverse proxy (secure cookies, real client IPs). Image: `1`. |
-| `WEBSSH_ALLOW_PRIVATE` | `true` on loopback | Allow SSH targets on private / loopback / link-local IPs. Defaults to `false` on any other bind. Compose sets `true` for homelab use. |
-| `WEBSSH_MAX_SESSIONS` | `50` | Concurrent SSH sessions on the gateway. |
-| `WEBSSH_MAX_USER_SESSIONS` | `20` | Concurrent SSH sessions per account. |
-| `WEBSSH_RESUME_MINUTES` | `5` | How long a session waits for its browser after the connection drops. `0` closes it immediately. |
-| `WEBSSH_FORWARD_PORTS` | `7100-7109` | Preview ports for HTTP port forwarding, one forward each. Empty turns forwarding off. Behind Caddy, keep `deploy/Caddyfile` and the published ports in sync. |
-| `WEBSSH_ALLOWED_ORIGINS` | — | Extra origins (`host:port`, comma-separated) for the API and WebSocket. Same-origin is always allowed. |
-| `WEBSSH_AI` | `false` | Turn on the AI helper. Also needs `ANTHROPIC_API_KEY`. |
-| `WEBSSH_AI_MODEL` | `claude-opus-5-5` | Model the AI helper uses. |
-
-## Security model
+<details>
+<summary><b>Project layout</b></summary>
 
 ```
-master password ──Argon2id (64 MiB)──▶ master key ──HKDF──┬─▶ auth key  → server stores sha256(salt‖key); used to sign in
-                                                           └─▶ wrap key  → stays in the browser
-vault key (random 256-bit) ── wrapped by wrap key ──▶ server
-vault items ── AES-256-GCM(vault key, aad = item id) ──▶ server (opaque base64)
+apps/web/                 React + Vite + xterm.js frontend
+  src/lib/crypto.ts       vault and team crypto (Argon2id, HKDF, AES-GCM, ECDH)
+  src/lib/vault.ts        encrypted vault store and sync
+server/                   Go gateway (single binary, embeds the built frontend)
+  cmd/webssh/             the gateway
+  cmd/webssh-cli/         companion CLI (TCP forwarding)
+  cmd/webssh-wasm/        in-browser SSH client for end-to-end sessions
+  internal/api/           accounts, vault, teams, admin, audit, AI endpoints
+  internal/gateway/       WebSocket ↔ SSH bridge, relay, forwarding, sharing, Telnet
+  internal/sshcore/       SSH client shared by the gateway and the browser
+  internal/sftpweb/       file API, shared by the gateway and the browser
+  internal/store/         SQLite (pure Go, no cgo)
+deploy/                   Dockerfile, docker-compose with Caddy
+design/                   logo, theme tokens, prototype
+docs/PLAN.md              architecture notes and roadmap
 ```
 
-- **The server never sees** your master password, vault key, saved hosts, saved credentials or snippets. A copy of the database alone doesn't decrypt anything. An attacker would have to guess your password through 64 MiB of Argon2id per guess.
-- **The gateway does see** SSH credentials and terminal traffic while a session is open, because it is the SSH client. Run your own gateway (that's the point of self-hosting). The destination host, port and username are recorded in your activity log.
-- **Sign-in:** sessions use an `HttpOnly`, `SameSite=Strict` cookie (`Secure` behind TLS). State-changing requests from other origins are refused. Login, recovery and 2FA attempts are rate-limited per IP and per account. Unknown emails get a decoy salt, so the login form doesn't reveal which accounts exist.
-- **Teams:** every account has a P-256 key pair; the private half is encrypted with your vault key. A team's key is random and encrypted separately for each member's public key, so the server only ever stores ciphertext. Members are confirmed by comparing key fingerprints out of band, which stops a malicious server from slipping in its own key. When an owner or admin removes a confirmed member, their browser replaces the team key at once: every item is re-encrypted under a new key that only the remaining members receive, and writes made with the old key are refused. That protects everything from then on, but the person removed may have kept copies of what they could already read, so change those passwords and keys. A viewer can't edit the vault but can still use, and therefore read, the credentials shared with them.
-- **Admins can't read vaults.** The gateway admin manages accounts and policy, but has no way into anyone's personal or team vault they aren't a member of.
-- **Host keys:** trust on first use. The trusted fingerprint is synced in the vault, and a mismatch is a hard block.
-- **Resume** needs a per-session token that only the same account can use; a second browser taking over the session closes the first. While nobody is attached, the gateway stops reading from the server (SSH flow control holds it back) instead of buffering without limit.
-- **End-to-end sessions:** the gateway only relays bytes to the first hop, under the same egress policy; it records the destination, duration and byte counts, but can't see the username, credentials, terminal or file transfers (so file actions in these sessions aren't in the audit log). The WebAssembly client is served by your own gateway, so you still trust the gateway's code; what you gain is that a compromised or curious gateway *at runtime* sees nothing, and nothing sensitive sits in its memory.
-- **Session sharing:** a share link is a random token (stored hashed) and only works for people signed in to the same gateway. *Watch and type* lets them run commands as you on that server, so share it with care; the owner can stop it at any time, and it dies with the session. Watchers who fall behind are disconnected rather than slowing the session down.
-- **Telnet** is plaintext between the gateway and the device; use it only on networks you trust. The egress policy applies as for SSH.
-- **Command history** is stored end-to-end encrypted in your vault. A line is only recorded if the server echoed it (so a password typed at a prompt isn't), and never if it starts with a space.
-- **CLI forwards** authenticate with a random bearer token (stored hashed) that only reaches one target through one session, and dies with either. Use `https`; the CLI warns about plain `http` to anything but localhost. Keep the token out of shell history by passing it in `WEBSSH_TOKEN`.
-- **AI helper:** off unless the admin enables it. Only text the user selects and confirms is sent, to Anthropic's API, via the gateway; never the vault, credentials or anything else. Selected output may contain secrets, which is why the text is shown for review before sending.
-- **Port forwarding** previews live on their own ports, so a forwarded app can't run scripts against webssh. Access needs a one-time link from the forward's creator; webssh cookies are stripped before requests reach the forwarded app, and it can't set cookies named `webssh*`.
-- **Agent forwarding** keeps the private key in gateway memory for the session's lifetime (that's what an agent is), so it's off unless you turn it on for a host you trust.
-- **Egress:** the gateway resolves the hostname once and dials that exact IP (no DNS rebinding). Private ranges are blocked unless allowed.
-- **Browser:** strict CSP (`'wasm-unsafe-eval'` only so Argon2 can run as WebAssembly), self-hosted fonts, no third-party code. The in-memory vault key is a non-extractable WebCrypto key.
+</details>
 
-## Layout
+---
 
-```
-apps/web/              React + Vite + xterm.js frontend
-  src/lib/crypto.ts    Argon2id / HKDF / AES-GCM vault crypto
-  src/lib/vault.ts     encrypted vault store + sync
-server/                Go gateway (single binary, embeds the built frontend)
-  internal/api/        accounts, sessions, TOTP, recovery, vault, audit (+ tests)
-  internal/gateway/    WebSocket ↔ SSH bridge, relay, forwarding, egress policy (+ tests)
-  internal/sshcore/    SSH client shared by the gateway and the browser (WebAssembly)
-  internal/sftpweb/    file API handlers, also shared with the browser
-  internal/ai/         optional "explain this output" helper (Anthropic Go SDK)
-  cmd/webssh-wasm/     the in-browser SSH client for end-to-end sessions
-  cmd/webssh-cli/      companion CLI (raw TCP forwarding)
-  internal/store/      SQLite (pure Go)
-deploy/                Dockerfile, docker-compose (with Caddy), Caddyfile
-design/                logo, theme tokens, clickable prototype
-docs/PLAN.md           architecture and roadmap
-```
+## Status
+
+webssh is under active development. Everything above is implemented and covered by tests, but it has not yet had an independent security review or been run in production. The Docker deployment has not yet been verified on a live server. See the [roadmap](docs/PLAN.md) for what's done and what's next (native desktop and mobile apps, Mosh, single sign-on, hardware security keys).
+
+## Brand
+
+The logo lives in [`design/logo`](design/logo): the mark as SVG (`mark.svg` uses `currentColor`; black and white versions too), the app icon, the favicon, the README banner and a GitHub social preview image. `design/logo/render.py` regenerates the PNGs.
+
+## License
+
+No license has been chosen yet, so all rights are reserved for now.
