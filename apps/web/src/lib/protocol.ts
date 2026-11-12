@@ -18,6 +18,8 @@ export interface Target extends Endpoint {
   startup?: string
   /** Forward an SSH agent holding this connection's keys. */
   agent?: boolean
+  /** End-to-end: SSH runs in this page and the gateway only relays bytes. */
+  e2e?: boolean
 }
 
 type WireHop = Endpoint & { knownHostKey: string }

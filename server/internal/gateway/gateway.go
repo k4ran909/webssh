@@ -9,25 +9,22 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/netip"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
-	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/k4ran909/webssh/internal/config"
+	"github.com/k4ran909/webssh/internal/sshcore"
 )
 
 const (
-	connectTimeout   = 10 * time.Second
-	handshakeTimeout = 2 * time.Minute // includes the user reading the host key prompt
-	hostKeyTimeout   = 90 * time.Second
-	keepaliveEvery   = 30 * time.Second
-	maxFrameBytes    = 1 << 20
-	outputChunk      = 32 << 10
+	connectTimeout = 10 * time.Second
+	keepaliveEvery = 30 * time.Second
+	maxFrameBytes  = 1 << 20
+	outputChunk    = 32 << 10
 )
 
 // Hooks connect the gateway to accounts and the audit log without importing them.
@@ -50,6 +47,8 @@ type Gateway struct {
 	handles  map[string]*sftpHandle
 	lives    map[string]*live
 	forwards map[int]*forward
+
+	tcpForwards map[string]*tcpForward
 }
 
 func New(cfg config.Config, log *slog.Logger, hooks Hooks) *Gateway {
@@ -60,7 +59,8 @@ func New(cfg config.Config, log *slog.Logger, hooks Hooks) *Gateway {
 		hooks.Audit = func(string, string, string, any) {}
 	}
 	return &Gateway{cfg: cfg, log: log, hooks: hooks, slots: make(chan struct{}, cfg.MaxSessions),
-		perUser: map[string]int{}, handles: map[string]*sftpHandle{}, lives: map[string]*live{}, forwards: map[int]*forward{}}
+		perUser: map[string]int{}, handles: map[string]*sftpHandle{}, lives: map[string]*live{}, forwards: map[int]*forward{},
+		tcpForwards: map[string]*tcpForward{}}
 }
 
 func (g *Gateway) claim(userID string) bool {
@@ -169,44 +169,37 @@ func (g *Gateway) start(s *session, req *clientMsg) *live {
 	}
 	log := s.log.With("user", req.User, "host", req.Host, "port", req.Port)
 
-	keyring := agentKeyring(req) // before credentials are dropped
-	client, closeAll, err := s.dial(req)
-	// drop credentials as soon as the handshakes are over
-	req.Auth = nil
-	for i := range req.Jump {
-		req.Jump[i].Auth = nil
+	var keyring agent.Agent
+	if req.Agent {
+		keyring = sshcore.AgentKeyring(req.Hops()) // before credentials are dropped
 	}
+	conn, err := s.dial(req)
+	req.DropCredentials() // as soon as the handshakes are over
 	if err != nil {
-		var ge *gwError
-		if !errors.As(err, &ge) {
-			ge = &gwError{codeHandshake, err.Error()}
-		}
-		log.Info("ssh connect failed", "code", ge.code)
-		dest["result"] = ge.code
+		ge := sshcore.AsError(err, codeHandshake)
+		log.Info("ssh connect failed", "code", ge.Code)
+		dest["result"] = ge.Code
 		g.hooks.Audit(s.userID, "ssh.connect", s.ip, dest)
-		s.fail(ge.code, ge.msg)
+		s.fail(ge.Code, ge.Msg)
 		return nil
 	}
 
-	l, err := newLive(g, s, client, closeAll, req, keyring, log)
+	l, err := newLive(g, s, conn.Client, conn.Close, req, keyring, log)
 	if err != nil {
-		closeAll()
-		var ge *gwError
-		if !errors.As(err, &ge) {
-			ge = &gwError{codeSession, err.Error()}
-		}
-		s.fail(ge.code, ge.msg)
+		conn.Close()
+		ge := sshcore.AsError(err, codeSession)
+		s.fail(ge.Code, ge.Msg)
 		return nil
 	}
 	ok = true
-	dest["result"], dest["fingerprint"] = "ok", s.fingerprint
+	dest["result"], dest["fingerprint"] = "ok", conn.Fingerprint
 	if keyring != nil {
 		dest["agent"] = true
 	}
 	g.hooks.Audit(s.userID, "ssh.connect", s.ip, dest)
-	log.Info("ssh session opened", "fingerprint", s.fingerprint)
+	log.Info("ssh session opened", "fingerprint", conn.Fingerprint)
 
-	l.attach(s, 0, false, &serverMsg{T: "ready", Fingerprint: s.fingerprint, Algo: s.hostKeyAlgo, SFTP: l.id, Resume: l.resumeToken})
+	l.attach(s, 0, false, &serverMsg{T: "ready", Fingerprint: conn.Fingerprint, Algo: conn.Algo, SFTP: l.id, Resume: l.resumeToken})
 	return l
 }
 
@@ -246,11 +239,6 @@ type session struct {
 
 	kicked   chan struct{} // closed when another socket takes over the session
 	kickOnce sync.Once
-
-	// Set by the host key callback during the handshake.
-	fingerprint string
-	hostKeyAlgo string
-	hostKeyErr  *gwError
 }
 
 func (s *session) kick() { s.kickOnce.Do(func() { close(s.kicked) }) }
@@ -322,7 +310,7 @@ func (s *session) awaitFirst(ctx context.Context) (*clientMsg, error) {
 		}
 		switch m.T {
 		case "connect":
-			return &m, m.validate()
+			return &m, m.Validate()
 		case "resume":
 			return &m, nil
 		}
@@ -334,217 +322,50 @@ func (s *session) awaitFirst(ctx context.Context) (*clientMsg, error) {
 	}
 }
 
-// dial connects to the target, hopping through req.Jump in order. Only the
-// first hop is subject to the egress policy: later hops are dialed from the
-// bastion's own network, which is the point of a jump host.
-func (s *session) dial(req *clientMsg) (*ssh.Client, func(), error) {
-	ctx := s.ctx
-	hops := append(append([]hop{}, req.Jump...), *req.target())
-	var chain []*ssh.Client
-	closeAll := func() {
-		for i := len(chain) - 1; i >= 0; i-- {
-			chain[i].Close()
-		}
-	}
-
-	for i := range hops {
-		h := &hops[i]
-		final := i == len(hops)-1
-		var conn net.Conn
-		if i == 0 {
-			ip, err := resolveTarget(ctx, h.Host, s.cfg.AllowPrivate)
-			if err != nil {
-				return nil, nil, err
-			}
-			addr := netip.AddrPortFrom(ip, uint16(h.Port)).String()
-			d := net.Dialer{Timeout: s.cfg.DialTimeout}
-			if conn, err = d.DialContext(ctx, "tcp", addr); err != nil {
-				var opErr *net.OpError
-				if errors.As(err, &opErr) {
-					err = opErr.Err
-				}
-				return nil, nil, &gwError{codeUnreachable, fmt.Sprintf("Could not reach %s: %v", addr, err)}
-			}
-		} else {
-			dctx, cancel := context.WithTimeout(ctx, s.cfg.DialTimeout)
-			c, err := chain[len(chain)-1].DialContext(dctx, "tcp", net.JoinHostPort(h.Host, strconv.Itoa(h.Port)))
-			cancel()
-			if err != nil {
-				closeAll()
-				return nil, nil, &gwError{codeUnreachable, fmt.Sprintf("Jump host %s could not reach %s:%d: %v", hops[i-1].Host, h.Host, h.Port, err)}
-			}
-			conn = c
-		}
-		client, err := s.handshake(conn, h, final)
-		if err != nil {
-			closeAll()
-			return nil, nil, err
-		}
-		chain = append(chain, client)
-	}
-	return chain[len(chain)-1], closeAll, nil
-}
-
-func (s *session) handshake(conn net.Conn, h *hop, final bool) (*ssh.Client, error) {
-	ctx := s.ctx
-	auth, err := authMethods(h.Auth)
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
-	// Channels through a bastion don't support deadlines, so a timer bounds
-	// the handshake for both kinds of connection (it includes the user
-	// reading the host key prompt).
-	timer := time.AfterFunc(handshakeTimeout, func() { conn.Close() })
-	defer timer.Stop()
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
-	defer stop()
-
-	where := ""
-	if !final {
-		where = " on jump host " + h.Host
-	}
-	s.hostKeyErr = nil
-	cfg := &ssh.ClientConfig{
-		User:            h.User,
-		Auth:            auth,
-		HostKeyCallback: s.verifyHostKey(h, final),
-		BannerCallback: func(msg string) error {
-			return s.ws.Write(ctx, websocket.MessageBinary, []byte(toCRLF(msg)))
+// dial connects to the target through req.Jump. The egress policy applies
+// to the first hop only: later hops are dialed from the bastion's network.
+func (s *session) dial(req *clientMsg) (*sshcore.Conn, error) {
+	d := &sshcore.Dialer{
+		Timeout: s.cfg.DialTimeout,
+		First: func(ctx context.Context, h *hop) (net.Conn, error) {
+			return s.gw.dialTarget(ctx, h.Host, h.Port)
 		},
+		Trust: s.askTrust,
+		Changed: func(h *hop, fp, algo string) {
+			_ = s.send(serverMsg{T: "hostkey", Status: "changed", Host: h.Host, Port: h.Port, Fingerprint: fp, Algo: algo})
+		},
+		Banner: func(msg string) { _ = s.ws.Write(s.ctx, websocket.MessageBinary, []byte(msg)) },
 	}
-	c, chans, reqs, err := ssh.NewClientConn(conn, net.JoinHostPort(h.Host, strconv.Itoa(h.Port)), cfg)
-	if err != nil {
-		conn.Close()
-		switch {
-		case s.hostKeyErr != nil:
-			return nil, s.hostKeyErr
-		case ctx.Err() != nil:
-			return nil, ctx.Err()
-		case strings.Contains(err.Error(), "unable to authenticate"):
-			what := "password"
-			if h.Auth.Type == "key" {
-				what = "key"
-			}
-			return nil, &gwError{codeAuthFailed, "Authentication failed" + where + ". Check the username and " + what + "."}
-		}
-		return nil, &gwError{codeHandshake, err.Error() + where}
-	}
-	return ssh.NewClient(c, chans, reqs), nil
+	return d.Dial(s.ctx, req.Hops())
 }
 
-// verifyHostKey implements trust-on-first-use per hop. The browser owns the
-// list of trusted keys and sends the one it expects; an unknown key is shown
-// to the user, a mismatched key is a hard failure.
-func (s *session) verifyHostKey(h *hop, final bool) ssh.HostKeyCallback {
-	return func(_ string, _ net.Addr, key ssh.PublicKey) error {
-		fp := ssh.FingerprintSHA256(key)
-		if final {
-			s.fingerprint, s.hostKeyAlgo = fp, key.Type()
-		}
-		msg := serverMsg{T: "hostkey", Host: h.Host, Port: h.Port, Fingerprint: fp, Algo: key.Type()}
-
-		if h.KnownHostKey != "" {
-			if fp == h.KnownHostKey {
+// askTrust shows an unknown host key to the user and waits for the answer.
+func (s *session) askTrust(h *hop, fp, algo string) error {
+	if err := s.send(serverMsg{T: "hostkey", Status: "new", Host: h.Host, Port: h.Port, Fingerprint: fp, Algo: algo}); err != nil {
+		return err
+	}
+	t := time.NewTimer(sshcore.HostKeyTimeout)
+	defer t.Stop()
+	for {
+		select {
+		case f, ok := <-s.in:
+			if !ok {
+				return errors.New("client went away")
+			}
+			var m clientMsg
+			if f.typ != websocket.MessageText || json.Unmarshal(f.data, &m) != nil {
+				continue
+			}
+			switch m.T {
+			case "hostkey-accept":
 				return nil
+			case "hostkey-reject":
+				return &gwError{Code: codeHostKeyRejected, Msg: "Host key not trusted. Connection cancelled."}
 			}
-			msg.Status = "changed"
-			_ = s.send(msg)
-			s.hostKeyErr = &gwError{codeHostKeyChanged, "The host key of " + h.Host + " does not match the one you trusted. " +
-				"The server may have been reinstalled, or someone may be intercepting the connection."}
-			return s.hostKeyErr
-		}
-
-		msg.Status = "new"
-		if err := s.send(msg); err != nil {
-			return err
-		}
-		t := time.NewTimer(hostKeyTimeout)
-		defer t.Stop()
-		for {
-			select {
-			case f, ok := <-s.in:
-				if !ok {
-					return errors.New("client went away")
-				}
-				var m clientMsg
-				if f.typ != websocket.MessageText || json.Unmarshal(f.data, &m) != nil {
-					continue
-				}
-				switch m.T {
-				case "hostkey-accept":
-					return nil
-				case "hostkey-reject":
-					s.hostKeyErr = &gwError{codeHostKeyRejected, "Host key not trusted. Connection cancelled."}
-					return s.hostKeyErr
-				}
-			case <-t.C:
-				s.hostKeyErr = &gwError{codeHostKeyRejected, "Timed out waiting for host key confirmation."}
-				return s.hostKeyErr
-			case <-s.ctx.Done():
-				return s.ctx.Err()
-			}
+		case <-t.C:
+			return &gwError{Code: codeHostKeyRejected, Msg: "Timed out waiting for host key confirmation."}
+		case <-s.ctx.Done():
+			return s.ctx.Err()
 		}
 	}
-}
-
-func parseSigner(a *authInfo) (ssh.Signer, error) {
-	var signer ssh.Signer
-	var err error
-	if a.Passphrase != "" {
-		signer, err = ssh.ParsePrivateKeyWithPassphrase([]byte(a.Key), []byte(a.Passphrase))
-	} else {
-		signer, err = ssh.ParsePrivateKey([]byte(a.Key))
-	}
-	var missing *ssh.PassphraseMissingError
-	if errors.As(err, &missing) {
-		return nil, &gwError{codeKeyPassphrase, "This private key is encrypted. Enter its passphrase."}
-	}
-	if err != nil {
-		return nil, &gwError{codeKeyInvalid, "Could not read the private key (wrong passphrase or unsupported format)."}
-	}
-	return signer, nil
-}
-
-func authMethods(a *authInfo) ([]ssh.AuthMethod, error) {
-	switch a.Type {
-	case "password":
-		pw := a.Password
-		return []ssh.AuthMethod{
-			ssh.Password(pw),
-			// Many servers only enable keyboard-interactive; answer hidden prompts with the password.
-			ssh.KeyboardInteractive(func(_, _ string, questions []string, echos []bool) ([]string, error) {
-				answers := make([]string, len(questions))
-				for i := range questions {
-					if !echos[i] {
-						answers[i] = pw
-					}
-				}
-				return answers, nil
-			}),
-		}, nil
-	case "key":
-		signer, err := parseSigner(a)
-		if err != nil {
-			return nil, err
-		}
-		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
-	}
-	return nil, &gwError{codeBadRequest, "unknown auth type"}
-}
-
-func exitCode(err error) int {
-	var exitErr *ssh.ExitError
-	switch {
-	case err == nil:
-		return 0
-	case errors.As(err, &exitErr):
-		return exitErr.ExitStatus()
-	default:
-		return -1
-	}
-}
-
-func toCRLF(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\n", "\r\n")
 }

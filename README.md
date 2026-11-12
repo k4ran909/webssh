@@ -2,7 +2,7 @@
 
 A self-hosted, browser-based SSH client: a Go gateway bridges WebSocket ↔ SSH, and a React + xterm.js frontend renders the terminal. Hosts, saved credentials, snippets and trusted host keys live in an end-to-end encrypted vault. "webssh" is a placeholder name.
 
-**Status: Phase 4 (teams with end-to-end encrypted shared vaults, roles, invitations, admin and 2FA policy) on top of Phases 0–3.** See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [design/THEME.md](design/THEME.md) for the visual system.
+**Status: Phase 5 (end-to-end sessions with SSH running in the browser, a companion CLI for raw TCP forwarding, an optional AI helper) on top of Phases 0–4.** See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [design/THEME.md](design/THEME.md) for the visual system.
 
 ## Features
 
@@ -37,6 +37,15 @@ A self-hosted, browser-based SSH client: a Go gateway bridges WebSocket ↔ SSH,
 - **Session recording** to asciicast files, and a built-in player with speed controls.
 - **Installable app (PWA)**, and an extra-keys bar (Esc, Tab, Ctrl, Alt, arrows) on phones and tablets.
 
+**End-to-end sessions**
+- **SSH in your browser.** Tick *End-to-end* on a host and the SSH client runs inside the page (Go compiled to WebAssembly, about 2.7 MB, loaded only when needed). The gateway just relays the encrypted connection: it never sees the password, the key, or anything you type or read. Host-key checks, jump hosts, agent forwarding and the file panel all work. Not available in this mode: resuming after a network drop, and port forwarding (the gateway can't see inside the connection).
+
+**Companion CLI**
+- **Raw TCP forwarding** for databases, Redis, RDP and anything else that isn't a web page. In a window's ⋯ menu choose *Forward a port → Local port (CLI)*; webssh shows a one-line command for `webssh-cli`, which listens on your computer and carries each connection through your open SSH session. The token in the command works only for that forward and stops when you stop it or the session ends.
+
+**AI helper (optional, off by default)**
+- **Explain selection.** Select confusing output in a terminal and choose *Explain selection with AI* (window ⋯ menu or the palette). You see exactly what will be sent first; only that text goes to Claude, through the gateway. The gateway admin turns it on with `WEBSSH_AI=true` and an Anthropic API key. The audit log records that you asked and how much text was sent, never the text itself.
+
 **Workspace**
 - **Window manager.** Each session is a window you can drag, resize from any edge, minimize to the dock, maximize (or double-click the title), and close. **Split right / split down** opens a second session inside the same window's area. Drag a window to the top edge to maximize it, or to the left/right edge to snap it to half the screen. Use Tile or Cascade to arrange everything.
 - **Tabs layout.** Switch between floating windows and tabs without dropping any sessions. Phones always use tabs.
@@ -64,6 +73,12 @@ npm run build
 
 ```bash
 ./bin/webssh
+```
+
+This also builds `bin/webssh-cli` (the companion CLI) and the WebAssembly SSH client for end-to-end sessions. To build the CLI for another computer, for example a Mac:
+
+```bash
+GOOS=darwin GOARCH=arm64 go -C server build -o ../bin/webssh-cli-mac ./cmd/webssh-cli
 ```
 
 Open http://127.0.0.1:7022 and create your account. Data goes to `./data` (SQLite + `server.key`); back up both.
@@ -114,6 +129,8 @@ Caddy gets a TLS certificate automatically. Open `https://ssh.example.com` right
 | `WEBSSH_RESUME_MINUTES` | `5` | How long a session waits for its browser after the connection drops. `0` closes it immediately. |
 | `WEBSSH_FORWARD_PORTS` | `7100-7109` | Preview ports for HTTP port forwarding, one forward each. Empty turns forwarding off. Behind Caddy, keep `deploy/Caddyfile` and the published ports in sync. |
 | `WEBSSH_ALLOWED_ORIGINS` | — | Extra origins (`host:port`, comma-separated) for the API and WebSocket. Same-origin is always allowed. |
+| `WEBSSH_AI` | `false` | Turn on the AI helper. Also needs `ANTHROPIC_API_KEY`. |
+| `WEBSSH_AI_MODEL` | `claude-opus-5-5` | Model the AI helper uses. |
 
 ## Security model
 
@@ -131,6 +148,9 @@ vault items ── AES-256-GCM(vault key, aad = item id) ──▶ server (opaqu
 - **Admins can't read vaults.** The gateway admin manages accounts and policy, but has no way into anyone's personal or team vault they aren't a member of.
 - **Host keys:** trust on first use. The trusted fingerprint is synced in the vault, and a mismatch is a hard block.
 - **Resume** needs a per-session token that only the same account can use; a second browser taking over the session closes the first. While nobody is attached, the gateway stops reading from the server (SSH flow control holds it back) instead of buffering without limit.
+- **End-to-end sessions:** the gateway only relays bytes to the first hop, under the same egress policy; it records the destination, duration and byte counts, but can't see the username, credentials, terminal or file transfers (so file actions in these sessions aren't in the audit log). The WebAssembly client is served by your own gateway, so you still trust the gateway's code; what you gain is that a compromised or curious gateway *at runtime* sees nothing, and nothing sensitive sits in its memory.
+- **CLI forwards** authenticate with a random bearer token (stored hashed) that only reaches one target through one session, and dies with either. Use `https`; the CLI warns about plain `http` to anything but localhost. Keep the token out of shell history by passing it in `WEBSSH_TOKEN`.
+- **AI helper:** off unless the admin enables it. Only text the user selects and confirms is sent, to Anthropic's API, via the gateway; never the vault, credentials or anything else. Selected output may contain secrets, which is why the text is shown for review before sending.
 - **Port forwarding** previews live on their own ports, so a forwarded app can't run scripts against webssh. Access needs a one-time link from the forward's creator; webssh cookies are stripped before requests reach the forwarded app, and it can't set cookies named `webssh*`.
 - **Agent forwarding** keeps the private key in gateway memory for the session's lifetime (that's what an agent is), so it's off unless you turn it on for a host you trust.
 - **Egress:** the gateway resolves the hostname once and dials that exact IP (no DNS rebinding). Private ranges are blocked unless allowed.
@@ -144,7 +164,12 @@ apps/web/              React + Vite + xterm.js frontend
   src/lib/vault.ts     encrypted vault store + sync
 server/                Go gateway (single binary, embeds the built frontend)
   internal/api/        accounts, sessions, TOTP, recovery, vault, audit (+ tests)
-  internal/gateway/    WebSocket ↔ SSH bridge, egress policy (+ tests)
+  internal/gateway/    WebSocket ↔ SSH bridge, relay, forwarding, egress policy (+ tests)
+  internal/sshcore/    SSH client shared by the gateway and the browser (WebAssembly)
+  internal/sftpweb/    file API handlers, also shared with the browser
+  internal/ai/         optional "explain this output" helper (Anthropic Go SDK)
+  cmd/webssh-wasm/     the in-browser SSH client for end-to-end sessions
+  cmd/webssh-cli/      companion CLI (raw TCP forwarding)
   internal/store/      SQLite (pure Go)
 deploy/                Dockerfile, docker-compose (with Caddy), Caddyfile
 design/                logo, theme tokens, clickable prototype

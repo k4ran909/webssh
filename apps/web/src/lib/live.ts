@@ -11,6 +11,8 @@ export interface LiveSession {
   startRecording(): void
   /** Returns the asciicast text, or null if nothing was being recorded. */
   stopRecording(): string | null
+  /** The text selected in the terminal ('' when nothing is). */
+  getSelection(): string
 }
 
 export const liveSessions = new Map<string, LiveSession>()

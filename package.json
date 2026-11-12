@@ -4,7 +4,7 @@
   "scripts": {
     "dev:server": "go -C server run ./cmd/webssh",
     "dev:web": "npm --prefix apps/web run dev",
-    "build": "npm --prefix apps/web run build && go -C server build -o ../bin/ ./cmd/webssh",
+    "build": "npm --prefix apps/web run build && go -C server build -o ../bin/ ./cmd/webssh ./cmd/webssh-cli",
     "test": "go -C server vet ./... && go -C server test ./... && npm --prefix apps/web run typecheck"
   }
 }

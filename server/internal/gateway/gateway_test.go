@@ -26,6 +26,7 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/k4ran909/webssh/internal/config"
+	"github.com/k4ran909/webssh/internal/sshcore"
 )
 
 // testSSHServer is a tiny in-process SSH server: password alice/s3cret or the
@@ -213,8 +214,10 @@ func startGatewayWith(t *testing.T, cfg config.Config) string {
 		}})
 	mux := http.NewServeMux()
 	mux.Handle("GET /ws", g)
+	mux.Handle("GET /relay", http.HandlerFunc(g.ServeRelay))
 	g.SFTPRoutes(mux, func(h http.Handler) http.Handler { return h })
 	g.ForwardRoutes(mux, func(h http.Handler) http.Handler { return h })
+	g.CLIRoutes(mux)
 	for _, p := range cfg.ForwardPorts {
 		mux.Handle(fmt.Sprintf("/preview/%d/", p), http.StripPrefix(fmt.Sprintf("/preview/%d", p), g.previewHandler(p)))
 	}
@@ -356,8 +359,8 @@ func TestChangedHostKeyIsBlocked(t *testing.T) {
 	if m := c.nextMsg(); m.T != "hostkey" || m.Status != "changed" {
 		t.Fatalf("want changed hostkey, got %+v", m)
 	}
-	if m := c.nextMsg(); m.T != "error" || m.Code != codeHostKeyChanged {
-		t.Fatalf("want %s, got %+v", codeHostKeyChanged, m)
+	if m := c.nextMsg(); m.T != "error" || m.Code != sshcore.CodeHostKeyChanged {
+		t.Fatalf("want %s, got %+v", sshcore.CodeHostKeyChanged, m)
 	}
 }
 
@@ -376,8 +379,8 @@ func TestWrongPassword(t *testing.T) {
 	port, fp, _ := testSSHServer(t)
 	c := dial(t, startGateway(t, true))
 	c.sendJSON(connectMsg(port, map[string]string{"type": "password", "password": "nope"}, fp))
-	if m := c.nextMsg(); m.T != "error" || m.Code != codeAuthFailed {
-		t.Fatalf("want %s, got %+v", codeAuthFailed, m)
+	if m := c.nextMsg(); m.T != "error" || m.Code != sshcore.CodeAuthFailed {
+		t.Fatalf("want %s, got %+v", sshcore.CodeAuthFailed, m)
 	}
 }
 
@@ -385,8 +388,8 @@ func TestPrivateTargetsBlockedByDefaultPolicy(t *testing.T) {
 	port, fp, _ := testSSHServer(t)
 	c := dial(t, startGateway(t, false))
 	c.sendJSON(connectMsg(port, goodPassword, fp))
-	if m := c.nextMsg(); m.T != "error" || m.Code != codeBlockedDest {
-		t.Fatalf("want %s, got %+v", codeBlockedDest, m)
+	if m := c.nextMsg(); m.T != "error" || m.Code != sshcore.CodeBlockedDest {
+		t.Fatalf("want %s, got %+v", sshcore.CodeBlockedDest, m)
 	}
 }
 
@@ -438,7 +441,7 @@ func TestIsRestricted(t *testing.T) {
 
 func TestValidate(t *testing.T) {
 	ok := clientMsg{T: "connect", Host: "[::1]", User: "root", Auth: &authInfo{Type: "password", Password: "x"}}
-	if err := ok.validate(); err != nil || ok.Host != "::1" || ok.Port != 22 || ok.Term != "xterm-256color" || ok.Cols != 80 {
+	if err := ok.Validate(); err != nil || ok.Host != "::1" || ok.Port != 22 || ok.Term != "xterm-256color" || ok.Cols != 80 {
 		t.Fatalf("defaults not applied: %v %+v", err, ok)
 	}
 	for name, m := range map[string]clientMsg{
@@ -450,7 +453,7 @@ func TestValidate(t *testing.T) {
 		"bad term":  {Host: "h", User: "u", Auth: ok.Auth, Term: "xterm; rm -rf"},
 		"empty key": {Host: "h", User: "u", Auth: &authInfo{Type: "key"}},
 	} {
-		if err := m.validate(); err == nil {
+		if err := m.Validate(); err == nil {
 			t.Errorf("%s: expected error", name)
 		}
 	}

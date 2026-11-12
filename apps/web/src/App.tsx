@@ -21,6 +21,8 @@ import type { WindowAction } from './components/WindowFrame'
 import { ForwardDialog, ForwardsPanel, useForwards } from './components/Forwarding'
 import { KeysBar } from './components/KeysBar'
 import { TeamsDialog } from './components/TeamsDialog'
+import { ExplainDialog } from './components/ExplainDialog'
+import { loadAI, useAI } from './lib/ai'
 import { AdminDialog } from './components/AdminDialog'
 import { moveHost } from './lib/share'
 import { downloadText, parseCast, type Cast } from './lib/cast'
@@ -85,6 +87,9 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
   const [palette, setPalette] = useState(false)
   const [pop, setPop] = useState<'snippets' | 'settings' | 'forwards' | null>(null)
   const [forwarding, setForwarding] = useState<string | null>(null)
+  const [explaining, setExplaining] = useState<{ text: string; where: string } | null>(null)
+  const ai = useAI()
+  useEffect(() => { loadAI() }, [])
   const [playback, setPlayback] = useState<{ cast: Cast; name: string } | null>(null)
   const castInput = useRef<HTMLInputElement>(null)
   const fwd = useForwards()
@@ -145,6 +150,8 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
         return open(s.target, s.title, s.color, { id, dir: action === 'split-right' ? 'right' : 'down' })
       case 'forward':
         return setForwarding(id)
+      case 'explain':
+        return setExplaining({ text: liveSessions.get(id)?.getSelection() ?? '', where: s.title })
       case 'record': {
         const live = liveSessions.get(id)
         if (!live) return
@@ -173,7 +180,7 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
     const item: HostItem = {
       kind: 'host', label: r.label || existing?.label || '', color: r.color,
       host: r.host, port: r.port, user: r.user, method: r.method,
-      group: r.group, jumpHostId: r.jumpHostId, startupSnippetId: r.startupSnippetId, agent: r.agent || undefined,
+      group: r.group, jumpHostId: r.jumpHostId, startupSnippetId: r.startupSnippetId, agent: r.agent || undefined, e2e: r.e2e || undefined,
     }
     if (r.ref) {
       if (r.ref.kind === 'identity') item.identityId = r.ref.id
@@ -230,6 +237,7 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
       host: r.host, port: r.port, user: creds.user,
       jumpHostId: r.jumpHostId ?? existing?.jumpHostId,
       agent: r.agent ?? existing?.agent,
+      e2e: r.e2e ?? existing?.e2e,
       startupSnippetId: r.startupSnippetId ?? existing?.startupSnippetId,
     } as SavedHost
     const res = resolveHost(asHost, viewRef.current, creds)
@@ -330,6 +338,13 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
       { id: 'a-import', section: 'Actions', label: 'Import ~/.ssh/config', icon: <Icon name="import" size={14} />, run: () => setImporting(true) },
       ...(ws.focusedId ? [{ id: 'a-files', section: 'Actions', label: 'Toggle files (SFTP)', icon: <Icon name="folder" size={14} />, run: () => dispatch({ type: 'toggleFiles', id: ws.focusedId! }) }] : []),
       { id: 'a-play', section: 'Actions', label: 'Play a recording…', hint: '.cast', icon: <Icon name="play" size={14} />, run: () => castInput.current?.click() },
+      ...(ai.enabled ? [{
+        id: 'a-explain', section: 'Actions', label: 'Explain selection with AI', hint: 'sends only the selected text', icon: <Icon name="sparkle" size={14} />,
+        run: () => {
+          const s = wsRef.current.sessions.find((x) => x.id === wsRef.current.focusedId)
+          setExplaining({ text: s ? liveSessions.get(s.id)?.getSelection() ?? '' : '', where: s?.title ?? 'terminal' })
+        },
+      }] : []),
       { id: 'a-fwd', section: 'Actions', label: 'Port forwarding', icon: <Icon name="forward" size={14} />, run: () => { fwd.refresh(); setPop('forwards') } },
       { id: 'a-teams', section: 'Account', label: 'Teams', hint: 'shared vaults', icon: <Icon name="users" size={14} />, run: () => setTeamsOpen(true) },
       ...(session.user.isAdmin ? [{ id: 'a-admin', section: 'Account', label: 'Gateway admin', hint: 'users, policy, audit', icon: <Icon name="shield" size={14} />, run: () => setAdminOpen(true) }] : []),
@@ -385,11 +400,11 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
           <button className="icon-btn" data-popover-anchor title="Port forwarding" aria-label="Port forwarding" aria-expanded={pop === 'forwards'}
             onClick={() => { fwd.refresh(); setPop((p) => (p === 'forwards' ? null : 'forwards')) }}>
             <Icon name="forward" />
-            {fwd.forwards.length > 0 && <span className="badge">{fwd.forwards.length}</span>}
+            {fwd.forwards.length + fwd.tcp.length > 0 && <span className="badge">{fwd.forwards.length + fwd.tcp.length}</span>}
           </button>
           {pop === 'forwards' && (
             <Popover onClose={() => setPop(null)} className="right">
-              <ForwardsPanel forwards={fwd.forwards} available={fwd.available} sessions={ws.sessions} onChange={fwd.refresh} />
+              <ForwardsPanel forwards={fwd.forwards} tcp={fwd.tcp} available={fwd.available} sessions={ws.sessions} onChange={fwd.refresh} />
             </Popover>
           )}
         </span>
@@ -546,6 +561,7 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
           onDone={(n) => { setImporting(false); setNotice(`Imported ${n} host${n === 1 ? '' : 's'}.`) }} />
       )}
 
+      {explaining && <ExplainDialog text={explaining.text} where={explaining.where} onClose={() => setExplaining(null)} />}
       {forwarding && ws.sessions.some((s) => s.id === forwarding) && (
         <ForwardDialog session={ws.sessions.find((s) => s.id === forwarding)!} onClose={() => setForwarding(null)} onCreated={fwd.refresh} />
       )}

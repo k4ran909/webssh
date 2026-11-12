@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/netip"
 	"time"
+
+	"github.com/k4ran909/webssh/internal/sshcore"
 )
 
 // Ranges that are not covered by netip's Is* helpers but must never be
@@ -47,7 +49,7 @@ func resolveTarget(ctx context.Context, host string, allowPrivate bool) (netip.A
 		defer cancel()
 		ips, err = net.DefaultResolver.LookupNetIP(lctx, "ip", host)
 		if err != nil || len(ips) == 0 {
-			return netip.Addr{}, &gwError{codeDNS, "Could not resolve " + host}
+			return netip.Addr{}, &gwError{Code: sshcore.CodeDNS, Msg: "Could not resolve " + host}
 		}
 	}
 
@@ -59,5 +61,5 @@ func resolveTarget(ctx context.Context, host string, allowPrivate bool) (netip.A
 			}
 		}
 	}
-	return netip.Addr{}, &gwError{codeBlockedDest, "This gateway does not allow connections to private or internal addresses."}
+	return netip.Addr{}, &gwError{Code: sshcore.CodeBlockedDest, Msg: "This gateway does not allow connections to private or internal addresses."}
 }

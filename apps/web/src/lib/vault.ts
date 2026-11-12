@@ -27,6 +27,8 @@ export interface HostItem {
   startupSnippetId?: string
   /** Forward an SSH agent holding this connection's keys (opt-in). */
   agent?: boolean
+  /** Run SSH in the browser; the gateway only relays encrypted bytes. */
+  e2e?: boolean
 }
 export interface SnippetItem {
   kind: 'snippet'

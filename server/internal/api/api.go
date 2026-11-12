@@ -33,6 +33,7 @@ type API struct {
 	recover *tickets
 	signup  sync.Mutex
 	now     func() time.Time
+	ai      Explainer // nil when the AI helper is off
 }
 
 func New(db *store.DB, cfg config.Config, log *slog.Logger, secret []byte) *API {
@@ -56,6 +57,7 @@ func (a *API) Routes(mux *http.ServeMux) {
 	mux.Handle("PUT /api/vault/items/{id}", a.RequireUser(http.HandlerFunc(a.vaultPut)))
 	mux.Handle("DELETE /api/vault/items/{id}", a.RequireUser(http.HandlerFunc(a.vaultDelete)))
 	mux.Handle("GET /api/audit", a.RequireUser(http.HandlerFunc(a.auditList)))
+	a.aiRoutes(mux)
 	a.teamRoutes(mux)
 	a.adminRoutes(mux)
 }

@@ -36,7 +36,9 @@ func (k keypairReq) valid(optional bool) bool {
 	return e1 == nil && e2 == nil
 }
 
-func validWrapped(s string) bool { return len(s) >= 40 && len(s) <= 1024 && !strings.ContainsAny(s, " \t\r\n") }
+func validWrapped(s string) bool {
+	return len(s) >= 40 && len(s) <= 1024 && !strings.ContainsAny(s, " \t\r\n")
+}
 
 func (a *API) teamRoutes(mux *http.ServeMux) {
 	h := func(f http.HandlerFunc) http.Handler { return a.RequireUser(f) }

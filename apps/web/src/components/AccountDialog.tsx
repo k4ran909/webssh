@@ -230,9 +230,13 @@ const fmtDur = (s: number) => (s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 6
 function describe(e: AuditEvent): { text: string; bad: boolean } {
   let d: Record<string, string | number | string[]> = {}
   try { d = JSON.parse(e.detail) } catch { /* old rows */ }
-  const dest = d.host ? `${d.user}@${d.host}${d.port && d.port !== 22 ? ':' + d.port : ''}` : ''
+  // End-to-end sessions: the gateway never learns the username.
+  const dest = d.host ? `${d.user ? d.user + '@' : ''}${d.host}${d.port && d.port !== 22 ? ':' + d.port : ''}${d.e2e ? ' · end-to-end' : ''}` : ''
   const via = Array.isArray(d.via) ? ` via ${d.via.join(' → ')}` : ''
-  if (e.action === 'ssh.connect') return { text: `${dest}${via}${d.result !== 'ok' ? ` · ${d.result}` : ''}`, bad: d.result !== 'ok' }
+  if (e.action === 'ssh.connect') {
+    const ok = d.result === 'ok' || d.result === 'relayed'
+    return { text: `${dest}${via}${ok ? '' : ` · ${d.result}`}`, bad: !ok }
+  }
   if (e.action.startsWith('sftp.')) {
     const name = (p: unknown) => String(p ?? '').split('/').pop()
     const extra = e.action === 'sftp.rename' ? ` → ${name(d.to)}` : e.action === 'sftp.chmod' ? ` → ${d.mode}` : d.bytes != null ? ` · ${fmtBytes(Number(d.bytes))}` : ''

@@ -409,11 +409,12 @@ Estimates assume one developer working with AI assistance, part-time-ish.
 - [ ] Multi-region gateways, Redis for presence/rate limits → deferred: only matters for a hosted SaaS; a single self-hosted gateway doesn't need it.
 - [ ] IP allowlists, per-team block on private targets → not done.
 
-### Phase 5 — Advanced (open-ended)
-- [ ] E2E mode: SSH in browser via WASM, gateway becomes a TCP relay only.
-- [ ] Companion CLI for raw local port forwarding.
-- [ ] AI helper: explain error output / suggest command (optional, off by default, never sees vault).
-- [ ] Browser extension / desktop wrapper (Tauri) for true shortcut capture.
+### Phase 5 — Advanced ✅ (2026-11-12)
+- [x] E2E mode: the SSH client (shared `internal/sshcore`, compiled to WebAssembly) runs in the page; the gateway becomes a TCP relay (`/ws/relay`) under the same egress policy. Same terminal protocol, so the UI is unchanged; host keys, jump hosts, agent forwarding and SFTP (the same `internal/sftpweb` handlers, run in the page) all work. No resume, no port forwarding in this mode. 10 MB WASM, served gzipped (2.7 MB) and loaded on first use.
+- [x] Companion CLI (`webssh-cli forward`) for raw local TCP forwarding: per-forward bearer token (hashed, revocable, dies with the session), one WebSocket per local connection, direct-tcpip on the session's SSH connection.
+- [x] AI helper: "Explain selection" sends only the selected, previewed text to Claude (Anthropic Go SDK, `claude-opus-5-5`, low effort, server-side refusal fallback). Off unless `WEBSSH_AI=true`; rate-limited per user; audited without content.
+- [ ] Browser extension / desktop wrapper (Tauri) → not done: needs a Rust toolchain, which this machine doesn't have. The PWA covers installation; true shortcut capture (Ctrl+W, Ctrl+T) still needs a wrapper.
+- [ ] E2E resume after a network drop → not done: the SSH state lives in the tab, so the relay would need to buffer and acknowledge bytes both ways.
 
 ---
 

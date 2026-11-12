@@ -39,6 +39,7 @@ export interface ConnectInitial {
   jumpHostId?: string
   startupSnippetId?: string
   agent?: boolean
+  e2e?: boolean
   /** Which vault the host lives in (personal or a team id). */
   vault?: string
   /** Editing a saved host that already has inline credentials. */
@@ -64,6 +65,7 @@ export interface ConnectResult {
   jumpHostId?: string
   startupSnippetId?: string
   agent?: boolean
+  e2e?: boolean
   vault: string
 }
 
@@ -111,9 +113,10 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
   const [jumpHostId, setJumpHostId] = useState(initial.jumpHostId ?? '')
   const [startupSnippetId, setStartupSnippetId] = useState(initial.startupSnippetId ?? '')
   const [agent, setAgent] = useState(!!initial.agent)
+  const [e2e, setE2e] = useState(!!initial.e2e)
   const [vaultId, setVaultId] = useState(initial.vault ?? PERSONAL)
   const vaultChoices = (choices.vaults ?? []).filter((v) => v.writable && !v.error)
-  const [more, setMore] = useState(!!(initial.group || initial.jumpHostId || initial.startupSnippetId || initial.agent))
+  const [more, setMore] = useState(!!(initial.group || initial.jumpHostId || initial.startupSnippetId || initial.agent || initial.e2e))
   const [error, setError] = useState('')
   const [joined, setJoined] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -151,7 +154,7 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
       host: parsed.host, port: finalPort, user: finalUser, method: source === 'password' ? 'password' : 'key', auth, ref,
       save, storeCreds: saving ? given : save && storeCreds, clearCreds,
       label: label.trim(), color, group: group.trim() || undefined,
-      jumpHostId: jumpHostId || undefined, startupSnippetId: startupSnippetId || undefined, agent, vault: vaultId,
+      jumpHostId: jumpHostId || undefined, startupSnippetId: startupSnippetId || undefined, agent, e2e, vault: vaultId,
     })
   }
 
@@ -285,6 +288,10 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
               </select>
             </label>
           )}
+          <label className="check">
+            <input type="checkbox" checked={e2e} onChange={(e) => setE2e(e.target.checked)} />
+            <span>End-to-end <em className="hint">(SSH runs in this browser; the gateway only relays encrypted traffic and never sees the password, key or terminal. No resume after a network drop, no port forwarding)</em></span>
+          </label>
           {source !== 'password' && (
             <label className="check">
               <input type="checkbox" checked={agent} onChange={(e) => setAgent(e.target.checked)} />

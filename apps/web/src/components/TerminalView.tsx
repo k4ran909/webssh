@@ -6,6 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
 import { algoLabel, gatewayURL, type ClientMsg, type ServerMsg, type Target } from '../lib/protocol'
+import { E2ESocket, type TermSocket } from '../lib/e2e'
 import { forgetKnownHost, getKnownHost, saveKnownHost } from '../lib/vault'
 import { applyModifiers, liveSessions, readySessions } from '../lib/live'
 import { CastRecorder } from '../lib/cast'
@@ -79,7 +80,7 @@ export const TerminalView = memo(function TerminalView({ id, title, target, font
     let disposed = false
     let ready = false
     let finished = false
-    let ws: WebSocket | null = null
+    let ws: TermSocket | null = null
     let changed: { host: string; port: number; fingerprint: string } | undefined
     // Resume state: token from "ready" and output bytes received since then.
     let resumeToken = ''
@@ -137,6 +138,7 @@ export const TerminalView = memo(function TerminalView({ id, title, target, font
       isReady: () => ready,
       write: (data) => ready && send(data),
       focus: () => term.focus(),
+      getSelection: () => term.getSelection(),
       openSearch: () => setSearch((s) => ({ ...s, open: true })),
       startRecording: () => {
         recorder = new CastRecorder(term.cols, term.rows, titleRef.current)
@@ -177,7 +179,7 @@ export const TerminalView = memo(function TerminalView({ id, title, target, font
 
     const openSocket = (first: ClientMsg) => {
       if (disposed) return
-      const sock = new WebSocket(gatewayURL())
+      const sock: TermSocket = target.e2e ? new E2ESocket() : new WebSocket(gatewayURL())
       ws = sock
       sock.binaryType = 'arraybuffer'
       sock.onopen = () => sock.send(JSON.stringify(first))
@@ -205,7 +207,7 @@ export const TerminalView = memo(function TerminalView({ id, title, target, font
             received = 0
             resumeToken = m.resume ?? ''
             lastReady = { fingerprint: m.fingerprint, algo: m.algo }
-            note(`\x1b[32m✓${DIM} ${algoLabel(m.algo)} host key verified · authenticated as ${target.user}${target.agent ? ' · agent forwarded' : ''}`)
+            note(`\x1b[32m✓${DIM} ${algoLabel(m.algo)} host key verified · authenticated as ${target.user}${target.e2e ? ' · end-to-end' : ''}${target.agent ? ' · agent forwarded' : ''}`)
             term.write('\r\n')
             // The PTY was sized at connect time; catch up with any resize since.
             sendRef.current({ t: 'resize', cols: term.cols, rows: term.rows })
@@ -275,7 +277,7 @@ export const TerminalView = memo(function TerminalView({ id, title, target, font
       fitSafe()
       metaRef.current(id, { cols: term.cols, rows: term.rows })
       const via = target.jump?.map((j) => j.label || j.host).join(' → ')
-      note(`Connecting to ${target.host}:${target.port}${via ? ` via ${via}` : ''} …`)
+      note(`Connecting to ${target.host}:${target.port}${via ? ` via ${via}` : ''}${target.e2e ? ' (end-to-end)' : ''} …`)
       openSocket({
         t: 'connect',
         host: target.host,

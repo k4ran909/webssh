@@ -37,6 +37,10 @@ type Config struct {
 	ResumeWindow time.Duration
 	// ForwardPorts are the preview ports for HTTP port forwarding (one forward each).
 	ForwardPorts []int
+	// AI turns on "explain this output" (needs an Anthropic API key); AIModel
+	// overrides the model it uses.
+	AI      bool
+	AIModel string
 }
 
 // parsePorts reads "7100-7109,7200" style lists.
@@ -85,6 +89,10 @@ func FromEnv() (Config, error) {
 	if c.TrustProxy, err = envBool("WEBSSH_TRUST_PROXY", false); err != nil {
 		return c, err
 	}
+	if c.AI, err = envBool("WEBSSH_AI", false); err != nil {
+		return c, err
+	}
+	c.AIModel = os.Getenv("WEBSSH_AI_MODEL")
 	for k, dst := range map[string]*int{"WEBSSH_MAX_SESSIONS": &c.MaxSessions, "WEBSSH_MAX_USER_SESSIONS": &c.MaxUserSessions} {
 		if v := os.Getenv(k); v != "" {
 			n, err := strconv.Atoi(v)

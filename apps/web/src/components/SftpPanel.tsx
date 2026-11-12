@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react'
-import { api, ApiError } from '../lib/api'
+import { ApiError } from '../lib/api'
+import { E2E_MAX_UPLOAD, isE2EHandle, sftpFetch } from '../lib/e2e'
 import { MAX_EDIT_BYTES } from '../lib/limits'
 import { liveSessions } from '../lib/live'
 import { Icon } from './icons'
@@ -46,6 +47,19 @@ interface Props {
 
 export function SftpPanel({ handle, sessionId, onClose }: Props) {
   const base = `/api/sftp/${encodeURIComponent(handle)}`
+  const e2e = isE2EHandle(handle)
+  // JSON calls go to the gateway, or to the in-page client for end-to-end sessions.
+  const call = useCallback(async <T,>(method: string, url: string, body?: unknown): Promise<T> => {
+    let res: Response
+    try {
+      res = await sftpFetch(handle, url, { method, body: body === undefined ? undefined : JSON.stringify(body) })
+    } catch {
+      throw new ApiError(0, 'NETWORK', "Can't reach the gateway.")
+    }
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new ApiError(res.status, data.code ?? `HTTP_${res.status}`, data.msg ?? res.statusText)
+    return data as T
+  }, [handle])
   const [path, setPath] = useState('')
   const [entries, setEntries] = useState<Entry[]>([])
   const [loading, setLoading] = useState(true)
@@ -65,7 +79,7 @@ export function SftpPanel({ handle, sessionId, onClose }: Props) {
     setLoading(true)
     setError('')
     try {
-      const r = await api<{ path: string; entries: Entry[] }>('GET', `${base}/ls?path=${encodeURIComponent(p)}`)
+      const r = await call<{ path: string; entries: Entry[] }>('GET', `${base}/ls?path=${encodeURIComponent(p)}`)
       setPath(r.path)
       setPathInput(r.path)
       setEntries(r.entries)
@@ -75,37 +89,66 @@ export function SftpPanel({ handle, sessionId, onClose }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [base])
+  }, [base, call])
 
   useEffect(() => { load('') }, [load])
 
   const op = async (body: Record<string, string>) => {
     try {
-      await api('POST', `${base}/op`, body)
+      await call('POST', `${base}/op`, body)
       await load(pathRef.current)
     } catch (e) {
       setError(message(e))
     }
   }
 
-  const download = (name: string) => {
+  const download = async (name: string) => {
+    const url = `${base}/file?download=1&path=${encodeURIComponent(join(path, name))}`
     const a = document.createElement('a')
-    a.href = `${base}/file?download=1&path=${encodeURIComponent(join(path, name))}`
     a.download = name
-    a.click()
+    if (!e2e) {
+      a.href = url
+      a.click()
+      return
+    }
+    // End-to-end: the file arrives in this page, then is handed to the browser.
+    try {
+      const res = await sftpFetch(handle, url)
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).msg ?? res.statusText)
+      a.href = URL.createObjectURL(await res.blob())
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
+    } catch (err) {
+      setError(message(err))
+    }
   }
 
   // Uploads use XHR for progress events; fetch can't report upload progress.
   const upload = (t: Transfer, overwrite = false) => {
-    const xhr = new XMLHttpRequest()
-    xhr.open('PUT', `${base}/file?path=${encodeURIComponent(join(t.dir, t.name))}${overwrite ? '&overwrite=1' : ''}`)
+    const url = `${base}/file?path=${encodeURIComponent(join(t.dir, t.name))}${overwrite ? '&overwrite=1' : ''}`
     const patch = (p: Partial<Transfer>) => setTransfers((ts) => ts.map((x) => (x.id === t.id ? { ...x, ...p } : x)))
+    const finished = () => {
+      patch({ state: 'done', loaded: t.total })
+      if (t.dir === pathRef.current) load(pathRef.current)
+      setTimeout(() => setTransfers((ts) => ts.filter((x) => x.id !== t.id)), 2500)
+    }
+    if (e2e) {
+      // End-to-end: the in-page SSH client writes it; no byte-level progress.
+      if (t.total > E2E_MAX_UPLOAD) return patch({ state: 'error', error: `End-to-end sessions upload up to ${E2E_MAX_UPLOAD >> 20} MB at a time.` })
+      patch({ state: 'active', loaded: 0, error: undefined })
+      sftpFetch(handle, url, { method: 'PUT', body: t.file }).then(async (res) => {
+        if (res.ok) return finished()
+        const msg = (await res.json().catch(() => ({}))).msg ?? res.statusText
+        patch({ state: res.status === 409 ? 'exists' : 'error', error: msg })
+      }, () => patch({ state: 'error', error: 'Upload failed' }))
+      return
+    }
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', url)
     xhr.upload.onprogress = (e) => patch({ loaded: e.loaded, total: e.total || t.total })
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        patch({ state: 'done', loaded: t.total })
-        if (t.dir === pathRef.current) load(pathRef.current)
-        setTimeout(() => setTransfers((ts) => ts.filter((x) => x.id !== t.id)), 2500)
+        finished()
       } else {
         let msg = xhr.statusText
         try { msg = JSON.parse(xhr.responseText).msg ?? msg } catch { /* not JSON */ }
@@ -136,7 +179,7 @@ export function SftpPanel({ handle, sessionId, onClose }: Props) {
     if (e.size > MAX_EDIT_BYTES) return download(e.name)
     setEditPath(p)
     try {
-      const res = await fetch(`${base}/file?path=${encodeURIComponent(p)}`, { credentials: 'same-origin' })
+      const res = await sftpFetch(handle, `${base}/file?path=${encodeURIComponent(p)}`)
       if (!res.ok) throw new ApiError(res.status, 'HTTP', (await res.json().catch(() => ({}))).msg ?? res.statusText)
       const buf = await res.arrayBuffer()
       let text: string
@@ -283,8 +326,8 @@ export function SftpPanel({ handle, sessionId, onClose }: Props) {
           dirty={editor.text !== editor.original}
           onChange={(text) => setEditor({ ...editor, text })}
           onSave={async () => {
-            const res = await fetch(`${base}/file?overwrite=1&path=${encodeURIComponent(editor.path)}`, {
-              method: 'PUT', credentials: 'same-origin', body: editor.text,
+            const res = await sftpFetch(handle, `${base}/file?overwrite=1&path=${encodeURIComponent(editor.path)}`, {
+              method: 'PUT', body: editor.text,
             })
             if (!res.ok) throw new Error((await res.json().catch(() => ({}))).msg ?? res.statusText)
             setEditor({ ...editor, original: editor.text })

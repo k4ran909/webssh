@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 )
 
@@ -27,6 +28,9 @@ func Handler() http.Handler {
 		if strings.HasPrefix(p, "assets/") {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
+		if serveGzipped(w, r, sub, p) {
+			return
+		}
 		if _, err := fs.Stat(sub, p); p != "" && err != nil {
 			// SPA fallback: unknown paths get the app shell.
 			r = r.Clone(r.Context())
@@ -34,6 +38,29 @@ func Handler() http.Handler {
 		}
 		files.ServeHTTP(w, r)
 	})
+}
+
+// serveGzipped answers with the precompressed copy (p + ".gz", written at
+// build time) of the ~10 MB WebAssembly SSH client, which compresses to about
+// a quarter. Only the .gz is embedded: every browser that runs WebAssembly
+// accepts gzip.
+func serveGzipped(w http.ResponseWriter, r *http.Request, sub fs.FS, p string) bool {
+	if !strings.HasSuffix(p, ".wasm") {
+		return false
+	}
+	b, err := fs.ReadFile(sub, p+".gz")
+	if err != nil {
+		return false
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/wasm")
+	h.Set("Content-Encoding", "gzip")
+	h.Set("Vary", "Accept-Encoding")
+	h.Set("Content-Length", strconv.Itoa(len(b)))
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(b)
+	}
+	return true
 }
 
 // SecurityHeaders sets a strict CSP; any XSS on this origin could drive SSH

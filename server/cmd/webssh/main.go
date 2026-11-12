@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/k4ran909/webssh/internal/ai"
 	"github.com/k4ran909/webssh/internal/api"
 	"github.com/k4ran909/webssh/internal/config"
 	"github.com/k4ran909/webssh/internal/gateway"
@@ -49,14 +50,21 @@ func run(log *slog.Logger) error {
 	defer stop()
 
 	a := api.New(db, cfg, log, secret)
+	if cfg.AI {
+		ex := ai.New(cfg.AIModel)
+		a.SetExplainer(ex)
+		log.Info("AI helper on", "model", ex.Model())
+	}
 	a.StartJanitor(ctx)
 	gw := gateway.New(cfg, log, gateway.Hooks{User: api.UserID, ClientIP: a.ClientIP, Audit: a.Record})
 
 	mux := http.NewServeMux()
 	a.Routes(mux)
 	mux.Handle("GET /ws/terminal", a.RequireUser(gw))
+	mux.Handle("GET /ws/relay", a.RequireUser(http.HandlerFunc(gw.ServeRelay)))
 	gw.SFTPRoutes(mux, a.RequireUser)
 	gw.ForwardRoutes(mux, a.RequireUser)
+	gw.CLIRoutes(mux) // bearer-token auth for the companion CLI
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 	mux.Handle("GET /", web.Handler())
 

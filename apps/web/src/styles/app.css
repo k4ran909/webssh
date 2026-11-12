@@ -600,3 +600,9 @@ a.btn { text-decoration: none; }
   .team-list { border-right: 0; border-bottom: 1px solid var(--border); padding: 0 0 12px; max-height: 180px; }
   .my-fp { padding-top: 8px; }
 }
+
+/* ── Phase 5: AI explain ── */
+.ai-preview { max-height: 220px; overflow: auto; white-space: pre-wrap; margin: 0; font-size: 12px; }
+.ai-answer { padding: 14px 0 4px; font-size: 14px; line-height: 1.55; }
+.ai-answer p { margin: 0 0 10px; white-space: pre-wrap; }
+.ai-answer pre { white-space: pre-wrap; margin: 0 0 10px; }

@@ -11,3 +11,6 @@ server/internal/web/dist/*
 # Local gateway data (SQLite + server key)
 data/
 server/data/
+
+# Built by apps/web/scripts/build-wasm.mjs
+apps/web/public/wasm/

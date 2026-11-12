@@ -4,9 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit -p . && vite build && node scripts/keep-dist.mjs",
-    "typecheck": "tsc --noEmit -p ."
+    "dev": "node scripts/build-wasm.mjs && vite",
+    "build": "node scripts/build-wasm.mjs && tsc --noEmit -p . && vite build && node scripts/keep-dist.mjs",
+    "typecheck": "tsc --noEmit -p .",
+    "wasm": "node scripts/build-wasm.mjs"
   },
   "dependencies": {
     "@fontsource/geist-mono": "5.3.0",

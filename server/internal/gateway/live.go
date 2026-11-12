@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -14,6 +13,8 @@ import (
 	"github.com/coder/websocket"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
+
+	"github.com/k4ran909/webssh/internal/sshcore"
 )
 
 // ringSize is how much recent output is kept for a reconnecting browser.
@@ -65,34 +66,13 @@ func randomToken() string {
 }
 
 func newLive(g *Gateway, s *session, client *ssh.Client, closeAll func(), req *clientMsg, keyring agent.Agent, log *slog.Logger) (*live, error) {
-	sess, err := client.NewSession()
+	sh, err := sshcore.OpenShell(client, keyring, req.Term, req.Rows, req.Cols, func(err error) {
+		log.Info("agent forwarding refused", "err", err)
+	})
 	if err != nil {
-		return nil, &gwError{codeSession, "Could not open a session: " + err.Error()}
-	}
-	if keyring != nil {
-		// Agent forwarding is best effort: a server that refuses it still gets a shell.
-		if err := agent.ForwardToAgent(client, keyring); err == nil {
-			if err := agent.RequestAgentForwarding(sess); err != nil {
-				log.Info("agent forwarding refused", "err", err)
-			}
-		}
-	}
-	modes := ssh.TerminalModes{ssh.ECHO: 1, ssh.TTY_OP_ISPEED: 14400, ssh.TTY_OP_OSPEED: 14400}
-	if err := sess.RequestPty(req.Term, req.Rows, req.Cols, modes); err != nil {
-		sess.Close()
-		return nil, &gwError{codeSession, "The server refused a terminal: " + err.Error()}
-	}
-	stdin, err1 := sess.StdinPipe()
-	stdout, err2 := sess.StdoutPipe()
-	stderr, err3 := sess.StderrPipe()
-	if err := errors.Join(err1, err2, err3); err != nil {
-		sess.Close()
 		return nil, err
 	}
-	if err := sess.Shell(); err != nil {
-		sess.Close()
-		return nil, &gwError{codeSession, "Could not start a shell: " + err.Error()}
-	}
+	sess, stdin, stdout, stderr := sh.Sess, sh.Stdin, sh.Stdout, sh.Stderr
 
 	l := &live{
 		g: g, userID: s.userID, ip: s.ip, host: req.Host, user: req.User, port: req.Port, log: log, started: time.Now(),
@@ -276,7 +256,7 @@ func (l *live) emit(b []byte) bool {
 }
 
 func (l *live) wait() {
-	code := exitCode(l.sess.Wait())
+	code := sshcore.ExitCode(l.sess.Wait())
 	l.mu.Lock()
 	l.exited = &code
 	attached := l.attached != nil
@@ -326,6 +306,11 @@ func (l *live) end() {
 				fwds = append(fwds, f)
 			}
 		}
+		for id, f := range g.tcpForwards {
+			if f.handle == l.id {
+				delete(g.tcpForwards, id)
+			}
+		}
 		g.mu.Unlock()
 		for _, f := range fwds {
 			f.close()
@@ -340,26 +325,7 @@ func (l *live) end() {
 	})
 }
 
-func (l *live) keepalive() {
-	t := time.NewTicker(keepaliveEvery)
-	defer t.Stop()
-	misses := 0
-	for {
-		select {
-		case <-l.ctx.Done():
-			return
-		case <-t.C:
-			if _, _, err := l.client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
-				if misses++; misses >= 3 {
-					l.client.Close()
-					return
-				}
-			} else {
-				misses = 0
-			}
-		}
-	}
-}
+func (l *live) keepalive() { sshcore.Keepalive(l.ctx, l.client) }
 
 // Shutdown ends every SSH session (server shutdown).
 func (g *Gateway) Shutdown() {

@@ -1,4 +1,5 @@
 import { memo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react'
+import { useAI } from '../lib/ai'
 import { MIN_H, MIN_W, type Action, type Rect, type Session } from '../lib/workspace'
 import { Icon } from './icons'
 import { Popover } from './Popover'
@@ -28,10 +29,11 @@ function snapRect(snap: Exclude<Snap, null>, area: { w: number; h: number }): Re
   return { x: snap === 'left' ? 0 : area.w - w, y: 0, w, h: area.h }
 }
 
-export type WindowAction = 'split-right' | 'split-down' | 'duplicate' | 'forward' | 'record'
+export type WindowAction = 'split-right' | 'split-down' | 'duplicate' | 'forward' | 'record' | 'explain'
 
 export const WindowFrame = memo(function WindowFrame({ session, focused, tabbed, broadcast, area, dispatch, onAction, onSearch, children }: Props) {
   const [menu, setMenu] = useState(false)
+  const ai = useAI()
   const { id, rect, minimized, meta } = session
   const maximized = session.maximized || tabbed
   const frameRef = useRef<HTMLDivElement>(null)
@@ -157,6 +159,7 @@ export const WindowFrame = memo(function WindowFrame({ session, focused, tabbed,
                     ['duplicate', 'copy', 'Duplicate session'],
                     ['forward', 'forward', 'Forward a port…'],
                     ['record', 'record', meta.recording ? 'Stop recording & save' : 'Record session'],
+                    ...(ai.enabled ? [['explain', 'sparkle', 'Explain selection with AI…'] as const] : []),
                   ] as const).map(([act, icon, label]) => (
                     <button key={act} className="pop-item" disabled={(act === 'forward' || act === 'record') && meta.phase !== 'ready' && !meta.recording}
                       onClick={() => { setMenu(false); onAction(id, act) }}>
