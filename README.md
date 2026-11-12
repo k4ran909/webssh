@@ -75,6 +75,15 @@ WEBSSH_DOMAIN=ssh.example.com docker compose -f deploy/docker-compose.yml up -d 
 
 Caddy obtains a TLS certificate automatically. **Open `https://ssh.example.com` straight away and create your account:** the first account becomes the gateway admin, and sign-up closes after it.
 
+### On Dokploy
+
+1. **Create an Application** from this repository (branch `main`).
+2. **Build:** type *Dockerfile*, Dockerfile path `deploy/Dockerfile`, build context `.`.
+3. **Environment:** `WEBSSH_FORWARD_PORTS=off` (Dokploy's proxy only routes the main port; the companion CLI still forwards). Add `WEBSSH_ALLOW_PRIVATE=true` if you'll connect to machines on your private network.
+4. **Volume:** a named volume mounted at `/data` (the database and `server.key` live there).
+5. **Domain:** your hostname, container port `7022`, HTTPS on.
+6. **Deploy**, then open the domain and create your account straight away.
+
 ### From source
 
 Requires **Go 1.26+** and **Node 20+**.
@@ -134,7 +143,7 @@ All settings are environment variables.
 | `WEBSSH_MAX_SESSIONS` | `50` | Concurrent sessions on the gateway. |
 | `WEBSSH_MAX_USER_SESSIONS` | `20` | Concurrent sessions per account. |
 | `WEBSSH_RESUME_MINUTES` | `5` | How long a session waits for its browser to come back. `0` turns resume off. |
-| `WEBSSH_FORWARD_PORTS` | `7100-7109` | Ports for in-browser port forwarding, one forward each. Empty turns it off. |
+| `WEBSSH_FORWARD_PORTS` | `7100-7109` | Ports for in-browser port forwarding, one forward each. `off` (or empty) turns it off. |
 | `WEBSSH_ALLOWED_ORIGINS` | none | Extra origins (`host:port`, comma-separated) allowed to call the API. |
 | `WEBSSH_AI` | `false` | Turn on the AI helper. Also needs `ANTHROPIC_API_KEY`. |
 | `WEBSSH_AI_MODEL` | `claude-opus-5-5` | Model the AI helper uses. |

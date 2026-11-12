@@ -23,9 +23,13 @@ RUN go mod download
 COPY server/ ./
 COPY --from=web /src/server/internal/web/dist ./internal/web/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/webssh ./cmd/webssh
+# The data directory must belong to the non-root user, so a fresh volume
+# mounted at /data starts out writable.
+RUN mkdir -p /out/data
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=server /out/webssh /webssh
+COPY --from=server --chown=65532:65532 /out/data /data
 ENV WEBSSH_ADDR=0.0.0.0:7022 \
     WEBSSH_DATA_DIR=/data \
     WEBSSH_TRUST_PROXY=1

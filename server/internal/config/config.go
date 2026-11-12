@@ -120,7 +120,17 @@ func FromEnv() (Config, error) {
 		}
 		c.ResumeWindow = time.Duration(n) * time.Minute
 	}
-	if c.ForwardPorts, err = parsePorts(getenv("WEBSSH_FORWARD_PORTS", "7100-7109")); err != nil {
+	// Set but empty (or "off") turns in-browser port forwarding off, e.g.
+	// behind a proxy that only routes the main port.
+	ports, set := os.LookupEnv("WEBSSH_FORWARD_PORTS")
+	switch strings.ToLower(strings.TrimSpace(ports)) {
+	case "off", "none", "false", "0":
+		ports = ""
+	}
+	if !set {
+		ports = "7100-7109"
+	}
+	if c.ForwardPorts, err = parsePorts(ports); err != nil {
 		return c, fmt.Errorf("WEBSSH_FORWARD_PORTS: %w", err)
 	}
 	return c, nil
