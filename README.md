@@ -16,6 +16,7 @@
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white">
   <img alt="Self-hosted" src="https://img.shields.io/badge/self--hosted-single%20binary-0a0a0a">
   <img alt="End-to-end encrypted vault" src="https://img.shields.io/badge/vault-end--to--end%20encrypted-0a0a0a">
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-0a0a0a"></a>
 </p>
 
 **webssh** is a self-hosted SSH client you use from any browser. A single Go binary serves the app and bridges your browser to your servers. Your hosts, keys, passwords and snippets live in a vault that is encrypted in the browser before it is ever synced, so the server stores only ciphertext.
@@ -263,4 +264,4 @@ The logo lives in [`design/logo`](design/logo): the mark as SVG (`mark.svg` uses
 
 ## License
 
-No license has been chosen yet, so all rights are reserved for now.
+webssh is released under the [MIT License](LICENSE).
