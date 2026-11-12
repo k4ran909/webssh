@@ -22,7 +22,10 @@ import { ForwardDialog, ForwardsPanel, useForwards } from './components/Forwardi
 import { KeysBar } from './components/KeysBar'
 import { TeamsDialog } from './components/TeamsDialog'
 import { ExplainDialog } from './components/ExplainDialog'
+import { CommandDialog } from './components/CommandDialog'
+import { ShareDialog, WatchView } from './components/Sharing'
 import { loadAI, useAI } from './lib/ai'
+import { clearHistory } from './lib/history'
 import { AdminDialog } from './components/AdminDialog'
 import { moveHost } from './lib/share'
 import { downloadText, parseCast, type Cast } from './lib/cast'
@@ -88,6 +91,16 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
   const [pop, setPop] = useState<'snippets' | 'settings' | 'forwards' | null>(null)
   const [forwarding, setForwarding] = useState<string | null>(null)
   const [explaining, setExplaining] = useState<{ text: string; where: string } | null>(null)
+  const [sharing, setSharing] = useState<string | null>(null)
+  const [asking, setAsking] = useState<{ id: string | null; where: string } | null>(null)
+  // Opening a share link (?watch=TOKEN) shows that session once signed in.
+  const [watchToken, setWatchToken] = useState(() => new URLSearchParams(location.search).get('watch'))
+  const stopWatching = () => {
+    setWatchToken(null)
+    const u = new URL(location.href)
+    u.searchParams.delete('watch')
+    history.replaceState(null, '', u.pathname + u.search + u.hash)
+  }
   const ai = useAI()
   useEffect(() => { loadAI() }, [])
   const [playback, setPlayback] = useState<{ cast: Cast; name: string } | null>(null)
@@ -150,6 +163,10 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
         return open(s.target, s.title, s.color, { id, dir: action === 'split-right' ? 'right' : 'down' })
       case 'forward':
         return setForwarding(id)
+      case 'share':
+        return setSharing(id)
+      case 'ask':
+        return setAsking({ id, where: s.title })
       case 'explain':
         return setExplaining({ text: liveSessions.get(id)?.getSelection() ?? '', where: s.title })
       case 'record': {
@@ -180,7 +197,7 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
     const item: HostItem = {
       kind: 'host', label: r.label || existing?.label || '', color: r.color,
       host: r.host, port: r.port, user: r.user, method: r.method,
-      group: r.group, jumpHostId: r.jumpHostId, startupSnippetId: r.startupSnippetId, agent: r.agent || undefined, e2e: r.e2e || undefined,
+      group: r.group, jumpHostId: r.jumpHostId, startupSnippetId: r.startupSnippetId, agent: r.agent || undefined, e2e: r.e2e || undefined, proto: r.proto,
     }
     if (r.ref) {
       if (r.ref.kind === 'identity') item.identityId = r.ref.id
@@ -205,6 +222,7 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
 
   /** Credentials from the form: inline, or looked up in the keychain. */
   const formCredentials = (r: ConnectResult): { user: string; auth: Auth } | undefined => {
+    if (r.proto === 'telnet') return { user: r.user, auth: { type: 'password', password: '' } }
     if (r.auth) return { user: r.user, auth: r.auth }
     if (!r.ref) return undefined
     const v = viewRef.current
@@ -238,6 +256,7 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
       jumpHostId: r.jumpHostId ?? existing?.jumpHostId,
       agent: r.agent ?? existing?.agent,
       e2e: r.e2e ?? existing?.e2e,
+      proto: r.proto,
       startupSnippetId: r.startupSnippetId ?? existing?.startupSnippetId,
     } as SavedHost
     const res = resolveHost(asHost, viewRef.current, creds)
@@ -344,6 +363,12 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
           const s = wsRef.current.sessions.find((x) => x.id === wsRef.current.focusedId)
           setExplaining({ text: s ? liveSessions.get(s.id)?.getSelection() ?? '' : '', where: s?.title ?? 'terminal' })
         },
+      }, {
+        id: 'a-ask', section: 'Actions', label: 'Ask AI for a command', hint: 'describe it in words', icon: <Icon name="sparkle" size={14} />,
+        run: () => {
+          const s = wsRef.current.sessions.find((x) => x.id === wsRef.current.focusedId)
+          setAsking({ id: s?.id ?? null, where: s?.title ?? '' })
+        },
       }] : []),
       { id: 'a-fwd', section: 'Actions', label: 'Port forwarding', icon: <Icon name="forward" size={14} />, run: () => { fwd.refresh(); setPop('forwards') } },
       { id: 'a-teams', section: 'Account', label: 'Teams', hint: 'shared vaults', icon: <Icon name="users" size={14} />, run: () => setTeamsOpen(true) },
@@ -448,6 +473,15 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
               <button className="pop-item" onClick={() => { setPop(null); setAccount(true) }}>
                 <Icon name="user" size={14} /><span>Account &amp; security</span><span className="pop-hint">{session.user.email}</span>
               </button>
+              <label className="pop-item">
+                <input type="checkbox" checked={prefs.suggest} onChange={(e) => setPref('suggest', e.target.checked)} />
+                <span>Command suggestions</span><span className="pop-hint">Ctrl+Space</span>
+              </label>
+              {prefs.suggest && (
+                <button className="pop-item" onClick={() => { clearHistory(); setNotice('Command history cleared.') }}>
+                  <Icon name="trash" size={14} /><span>Clear command history</span>
+                </button>
+              )}
               <button className="pop-item" onClick={() => { setPop(null); setTeamsOpen(true) }}>
                 <Icon name="users" size={14} /><span>Teams</span>
               </button>
@@ -561,6 +595,11 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
           onDone={(n) => { setImporting(false); setNotice(`Imported ${n} host${n === 1 ? '' : 's'}.`) }} />
       )}
 
+      {sharing && ws.sessions.some((s) => s.id === sharing) && (
+        <ShareDialog session={ws.sessions.find((s) => s.id === sharing)!} onClose={() => setSharing(null)} />
+      )}
+      {asking && <CommandDialog sessionId={asking.id} where={asking.where} onClose={() => setAsking(null)} />}
+      {watchToken && <WatchView token={watchToken} onClose={stopWatching} />}
       {explaining && <ExplainDialog text={explaining.text} where={explaining.where} onClose={() => setExplaining(null)} />}
       {forwarding && ws.sessions.some((s) => s.id === forwarding) && (
         <ForwardDialog session={ws.sessions.find((s) => s.id === forwarding)!} onClose={() => setForwarding(null)} onCreated={fwd.refresh} />

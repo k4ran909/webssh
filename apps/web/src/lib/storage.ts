@@ -39,9 +39,11 @@ export interface Prefs {
   sidebar: boolean
   /** Minutes of inactivity before the vault locks; 0 = never. */
   autoLock: number
+  /** Remember commands and suggest completions. */
+  suggest: boolean
 }
 
-export const getPrefs = (): Prefs => ({ layout: 'windows', fontSize: 13, sidebar: true, autoLock: 15, ...read<Partial<Prefs>>(PREFS, {}) })
+export const getPrefs = (): Prefs => ({ layout: 'windows', fontSize: 13, sidebar: true, autoLock: 15, suggest: true, ...read<Partial<Prefs>>(PREFS, {}) })
 export const savePrefs = (p: Prefs) => write(PREFS, p)
 
 export type ThemePref = 'system' | 'light' | 'dark'

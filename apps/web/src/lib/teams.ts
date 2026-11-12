@@ -3,9 +3,9 @@
 import { useSyncExternalStore } from 'react'
 import { api, ApiError, type SignedIn } from './api'
 import {
-  importVaultKey, keyFingerprint, loadSharingKey, newSharingKeypair, randomBytes, unwrapTeamKey, wrapTeamKey, type Bytes,
+  decryptItem, encryptItem, importVaultKey, keyFingerprint, loadSharingKey, newSharingKeypair, randomBytes, unwrapTeamKey, wrapTeamKey, type Bytes,
 } from './crypto'
-import { closeTeamVaults, syncTeamVaults, type Role, type TeamVaultSpec } from './vault'
+import { closeTeamVaults, setOnKeyRotated, syncTeamVaults, type Role, type TeamVaultSpec } from './vault'
 
 export interface Team {
   id: string
@@ -14,6 +14,8 @@ export interface Team {
   requireTotp: boolean
   confirmed: boolean
   wrappedKey?: string
+  /** Bumped each time the team key is rotated. */
+  keyEpoch: number
 }
 
 export interface Member {
@@ -56,8 +58,14 @@ export const useTeams = () =>
  * After unlock: load (or create, for accounts made before teams) the sharing
  * keypair, then open every team vault we hold a key for.
  */
+let myUserId = ''
+/** Which epoch each cached team key belongs to. */
+const keyEpochs = new Map<string, number>()
+setOnKeyRotated(() => { refreshTeams().catch(() => {}) })
+
 export async function startTeams(session: SignedIn, vaultKey: CryptoKey): Promise<SignedIn> {
   let s = session
+  myUserId = s.user.id
   if (s.keypair) {
     myPrivate = await loadSharingKey(vaultKey, s.keypair.encPrivateKey)
     myPublic = s.keypair.publicKey
@@ -95,11 +103,12 @@ export async function refreshTeams() {
     if (!t.confirmed || !t.wrappedKey) continue
     try {
       let raw = rawTeamKeys.get(t.id)
-      if (!raw) {
+      if (!raw || keyEpochs.get(t.id) !== t.keyEpoch) {
         raw = await unwrapTeamKey(myPrivate, t.wrappedKey)
         rawTeamKeys.set(t.id, raw)
+        keyEpochs.set(t.id, t.keyEpoch)
       }
-      specs.push({ id: t.id, name: t.name, role: t.role, key: await importVaultKey(raw) })
+      specs.push({ id: t.id, name: t.name, role: t.role, key: await importVaultKey(raw), epoch: t.keyEpoch })
     } catch {
       errors[t.id] = `${t.name}\nCan't decrypt this team's key. Ask a team admin to confirm you again.`
     }
@@ -120,6 +129,7 @@ export async function createTeam(name: string) {
   const wrappedKey = await wrapTeamKey(raw, myPublic)
   const { id } = await api<{ id: string }>('POST', '/api/teams', { name, wrappedKey })
   rawTeamKeys.set(id, raw)
+  keyEpochs.set(id, 0)
   await refreshTeams()
   return id
 }
@@ -142,9 +152,63 @@ export const addMember = (teamId: string, email: string, role: Role) =>
 
 export const setRole = (teamId: string, userId: string, role: Role) => api('PATCH', `/api/teams/${teamId}/members/${userId}`, { role })
 
-export async function removeMember(teamId: string, userId: string) {
+/**
+ * Removes someone. When an admin removes a confirmed member, the team key is
+ * rotated straight away so the new key (and anything saved from now on) never
+ * reaches them. Returns whether the key was rotated.
+ */
+export async function removeMember(teamId: string, userId: string, wasConfirmed = false): Promise<boolean> {
   await api('DELETE', `/api/teams/${teamId}/members/${userId}`)
-  await refreshTeams()
+  if (userId === myUserId || !wasConfirmed) {
+    await refreshTeams()
+    return false
+  }
+  await rotateTeamKey(teamId)
+  return true
+}
+
+/**
+ * Replaces the team key: every item is re-encrypted under a fresh key, which
+ * is wrapped for each confirmed member. The server applies it only if nothing
+ * changed meanwhile; on a clash this tries again with fresh data.
+ */
+export async function rotateTeamKey(teamId: string) {
+  for (let attempt = 0; ; attempt++) {
+    const oldRaw = rawTeamKeys.get(teamId)
+    if (!oldRaw) throw new Error("You don't hold this team's key.")
+    const { teams } = await api<{ teams: Team[] }>('GET', '/api/teams')
+    const team = teams.find((t) => t.id === teamId)
+    if (!team) throw new Error('That team is gone.')
+    const [{ members: ms }, vaultData] = await Promise.all([
+      members(teamId),
+      api<{ items: { id: string; data: string; deleted?: boolean }[]; revision: number }>('GET', `/api/teams/${teamId}/vault?since=0`),
+    ])
+    const oldKey = await importVaultKey(oldRaw)
+    const raw = randomBytes(32) as Bytes
+    const newKey = await importVaultKey(raw)
+    const items: { id: string; data: string }[] = []
+    for (const it of vaultData.items) {
+      if (it.deleted || !it.data) continue
+      items.push({ id: it.id, data: await encryptItem(newKey, it.id, await decryptItem(oldKey, it.id, it.data)) })
+    }
+    const keys: Record<string, string> = {}
+    for (const m of ms) {
+      if (!m.confirmed) continue
+      if (!m.publicKey) throw new Error(`${m.email} has no key to encrypt to.`)
+      keys[m.userId] = await wrapTeamKey(raw, m.publicKey)
+    }
+    try {
+      await api('POST', `/api/teams/${teamId}/rotate`, { epoch: team.keyEpoch, revision: vaultData.revision, items, keys })
+    } catch (e) {
+      if (isApiError(e, 'ROTATE_CONFLICT') && attempt < 3) continue
+      throw e
+    }
+    oldRaw.fill(0)
+    rawTeamKeys.set(teamId, raw)
+    keyEpochs.set(teamId, team.keyEpoch + 1)
+    await refreshTeams()
+    return
+  }
 }
 
 export const revokeInvite = (teamId: string, email: string) => api('DELETE', `/api/teams/${teamId}/invites`, { email })
@@ -158,6 +222,7 @@ export async function deleteTeam(teamId: string) {
   await api('DELETE', `/api/teams/${teamId}`)
   rawTeamKeys.get(teamId)?.fill(0)
   rawTeamKeys.delete(teamId)
+  keyEpochs.delete(teamId)
   await refreshTeams()
 }
 

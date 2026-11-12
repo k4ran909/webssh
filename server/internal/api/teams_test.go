@@ -287,3 +287,73 @@ func TestMigrationIsIdempotent(t *testing.T) {
 		db.Close()
 	}
 }
+
+func TestTeamKeyRotation(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.OpenSignup = true })
+	owner, bob, carol := e.client(), e.client(), e.client()
+	owner.signupWith("owner@example.com", keypair())
+	bob.signupWith("bob@example.com", keypair())
+	carol.signupWith("carol@example.com", keypair())
+	var created struct{ ID string }
+	owner.do("POST", "/api/teams", map[string]string{"name": "Ops", "wrappedKey": rnd(100)}, &created)
+	tid := created.ID
+	for _, email := range []string{"bob@example.com", "carol@example.com"} {
+		owner.do("POST", "/api/teams/"+tid+"/members", map[string]string{"email": email, "role": "member"}, nil)
+	}
+	var ms struct{ Members []store.Member }
+	owner.do("GET", "/api/teams/"+tid+"/members", nil, &ms)
+	ids := map[string]string{}
+	for _, m := range ms.Members {
+		ids[m.Email] = m.UserID
+		if m.Email != "owner@example.com" {
+			owner.do("POST", "/api/teams/"+tid+"/members/"+m.UserID+"/confirm", map[string]string{"wrappedKey": rnd(100)}, nil)
+		}
+	}
+	item := "/api/teams/" + tid + "/vault/items/11111111-1111-4111-8111-111111111111"
+	if code := owner.do("PUT", item, map[string]any{"data": rnd(64), "epoch": 0}, nil); code != 200 {
+		t.Fatalf("put: %d", code)
+	}
+
+	// Remove carol, then rotate. Leaving out a member, or keeping carol in, is refused.
+	owner.do("DELETE", "/api/teams/"+tid+"/members/"+ids["carol@example.com"], nil, nil)
+	var v struct{ Revision int64 }
+	owner.do("GET", "/api/teams/"+tid+"/vault", nil, &v)
+	items := []map[string]string{{"id": "11111111-1111-4111-8111-111111111111", "data": rnd(64)}}
+	rotate := func(c *client, keys map[string]string, rev int64) (int, apiError) {
+		var er apiError
+		code := c.do("POST", "/api/teams/"+tid+"/rotate", map[string]any{"epoch": 0, "revision": rev, "items": items, "keys": keys}, &er)
+		return code, er
+	}
+	full := map[string]string{ids["owner@example.com"]: rnd(100), ids["bob@example.com"]: rnd(100)}
+	if code, er := rotate(owner, map[string]string{ids["owner@example.com"]: rnd(100)}, v.Revision); code != 409 || er.Code != "ROTATE_CONFLICT" {
+		t.Fatalf("missing member: %d %+v", code, er)
+	}
+	withCarol := map[string]string{ids["carol@example.com"]: rnd(100)}
+	for k, val := range full {
+		withCarol[k] = val
+	}
+	if code, _ := rotate(owner, withCarol, v.Revision); code != 409 {
+		t.Fatalf("removed member included: %d", code)
+	}
+	if code, _ := rotate(owner, full, v.Revision-1); code != 409 {
+		t.Fatalf("stale revision: %d", code)
+	}
+	if code, _ := rotate(bob, full, v.Revision); code != 403 {
+		t.Fatalf("a member rotating: %d", code)
+	}
+	if code, er := rotate(owner, full, v.Revision); code != 200 {
+		t.Fatalf("rotate: %d %+v", code, er)
+	}
+
+	// Writes with the old key are refused; the new epoch is visible to members.
+	var er apiError
+	if code := bob.do("PUT", item, map[string]any{"data": rnd(64), "epoch": 0}, &er); code != 409 || er.Code != "KEY_ROTATED" {
+		t.Fatalf("stale write: %d %+v", code, er)
+	}
+	if ts := bob.teams(); len(ts) != 1 || ts[0].KeyEpoch != 1 || ts[0].WrappedKey != full[ids["bob@example.com"]] {
+		t.Fatalf("bob after rotation: %+v", ts)
+	}
+	if code := bob.do("PUT", item, map[string]any{"data": rnd(64), "epoch": 1}, nil); code != 200 {
+		t.Fatalf("write with new epoch: %d", code)
+	}
+}

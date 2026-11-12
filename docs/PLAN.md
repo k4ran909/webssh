@@ -416,6 +416,15 @@ Estimates assume one developer working with AI assistance, part-time-ish.
 - [ ] Browser extension / desktop wrapper (Tauri) → not done: needs a Rust toolchain, which this machine doesn't have. The PWA covers installation; true shortcut capture (Ctrl+W, Ctrl+T) still needs a wrapper.
 - [ ] E2E resume after a network drop → not done: the SSH state lives in the tab, so the relay would need to buffer and acknowledge bytes both ways.
 
+### Termius parity pack ✅ (2026-11-12)
+- [x] Live session sharing: per-session share links (watch, or watch and type) for accounts on the same gateway; replay of recent output on join, live output after, owner sees watchers and can stop; slow watchers are dropped instead of stalling the session.
+- [x] SOCKS (-D) and remote (-R) forwarding through `webssh-cli forward`, next to local (-L); the gateway reaches the destination before accepting the CLI's socket, so failures are clear.
+- [x] Telnet: option negotiation (window size, terminal type, echo, suppress go-ahead), egress policy, no stored credentials.
+- [x] Command suggestions from encrypted history and snippets (echo check keeps prompt passwords out); Ctrl+Space to accept.
+- [x] AI command generation (review, then type it in; never run automatically).
+- [x] Team key rotation: automatic when a confirmed member is removed, or on demand; key epochs reject writes made with an old key.
+- [ ] Native desktop / mobile apps, Mosh, SSO (SAML/OIDC), hardware security keys → not done (need a Rust toolchain, UDP on the gateway, an identity provider, and a local agent bridge respectively).
+
 ---
 
 ## 12. Testing strategy

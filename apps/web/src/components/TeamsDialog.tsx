@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import {
-  addMember, confirmMember, createTeam, deleteTeam, fingerprint, members as loadMembers, refreshTeams, removeMember,
+  addMember, confirmMember, createTeam, deleteTeam, fingerprint, members as loadMembers, refreshTeams, removeMember, rotateTeamKey,
   revokeInvite, setRole, setTeamRequireTotp, useTeams, type Member, type PendingInvite, type Team,
 } from '../lib/teams'
 import type { Role } from '../lib/vault'
@@ -162,7 +162,9 @@ function TeamDetail({ team, myUserId, onGone }: { team: Team; myUserId: string; 
               )}
               {canManage(m) && (
                 <button className="icon-btn sm" title="Remove from team" aria-label={`Remove ${m.email}`}
-                  onClick={() => act(() => removeMember(team.id, m.userId), `${m.email} was removed.`)}>
+                  onClick={() => act(() => removeMember(team.id, m.userId, m.confirmed), m.confirmed
+                    ? `${m.email} was removed and the team key was replaced. Change any passwords or keys they could see.`
+                    : `${m.email} was removed.`)}>
                   <Icon name="x" size={13} />
                 </button>
               )}
@@ -189,6 +191,12 @@ function TeamDetail({ team, myUserId, onGone }: { team: Team; myUserId: string; 
             <input type="checkbox" checked={team.requireTotp} onChange={(e) => act(() => setTeamRequireTotp(team.id, e.target.checked))} />
             <span>Require two-factor sign-in to open this team's vault</span>
           </label>
+          <div className="acts">
+            <button className="btn" onClick={() => act(() => rotateTeamKey(team.id), 'Team key replaced. Everyone still in the team keeps access.')}>
+              <Icon name="key" size={13} /> Replace team key
+            </button>
+          </div>
+          <p className="pop-sub">Re-encrypts the team vault with a new key, for current members only. Happens automatically when you remove someone.</p>
         </section>
       )}
 

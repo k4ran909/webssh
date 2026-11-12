@@ -2,7 +2,7 @@
 
 A self-hosted, browser-based SSH client: a Go gateway bridges WebSocket ↔ SSH, and a React + xterm.js frontend renders the terminal. Hosts, saved credentials, snippets and trusted host keys live in an end-to-end encrypted vault. "webssh" is a placeholder name.
 
-**Status: Phase 5 (end-to-end sessions with SSH running in the browser, a companion CLI for raw TCP forwarding, an optional AI helper) on top of Phases 0–4.** See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [design/THEME.md](design/THEME.md) for the visual system.
+**Status: Phase 5 plus the Termius parity pack (session sharing, SOCKS and remote forwarding, Telnet, autocomplete, AI commands, team key rotation) on top of Phases 0–4.** See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [design/THEME.md](design/THEME.md) for the visual system.
 
 ## Features
 
@@ -32,7 +32,7 @@ A self-hosted, browser-based SSH client: a Go gateway bridges WebSocket ↔ SSH,
 
 **Staying connected**
 - **Session resume.** If your Wi-Fi drops or your laptop sleeps, the SSH session keeps running on the gateway for 5 minutes and the terminal reattaches on its own, replaying any output you missed (the last 512 KB).
-- **Port forwarding (HTTP).** Open a web app running on the server (dashboards, dev servers) in your browser through the SSH connection. Each forward gets its own preview port, so it's a separate origin from webssh. Raw TCP (databases) still needs a desktop client.
+- **Port forwarding (HTTP).** Open a web app running on the server (dashboards, dev servers) in your browser through the SSH connection. Each forward gets its own preview port, so it's a separate origin from webssh. For databases and other TCP services, use the companion CLI (below).
 - **Agent forwarding** (opt-in per host) so `git` and `ssh` on the server can use your key.
 - **Session recording** to asciicast files, and a built-in player with speed controls.
 - **Installable app (PWA)**, and an extra-keys bar (Esc, Tab, Ctrl, Alt, arrows) on phones and tablets.
@@ -41,10 +41,20 @@ A self-hosted, browser-based SSH client: a Go gateway bridges WebSocket ↔ SSH,
 - **SSH in your browser.** Tick *End-to-end* on a host and the SSH client runs inside the page (Go compiled to WebAssembly, about 2.7 MB, loaded only when needed). The gateway just relays the encrypted connection: it never sees the password, the key, or anything you type or read. Host-key checks, jump hosts, agent forwarding and the file panel all work. Not available in this mode: resuming after a network drop, and port forwarding (the gateway can't see inside the connection).
 
 **Companion CLI**
-- **Raw TCP forwarding** for databases, Redis, RDP and anything else that isn't a web page. In a window's ⋯ menu choose *Forward a port → Local port (CLI)*; webssh shows a one-line command for `webssh-cli`, which listens on your computer and carries each connection through your open SSH session. The token in the command works only for that forward and stops when you stop it or the session ends.
+- **TCP forwarding like ssh's -L, -D and -R.** In a window's ⋯ menu choose *Forward a port*, then *Local port* (a database or Redis on the server's side, on a port of your computer), *SOCKS* (a SOCKS5 proxy on your computer that reaches anything the server can), or *Remote* (the server listens on a port and its connections come to a port on your computer, e.g. to show a local dev server). webssh shows a one-line `webssh-cli forward` command; the token in it works only for that forward and stops when you stop it or the session ends.
 
 **AI helper (optional, off by default)**
 - **Explain selection.** Select confusing output in a terminal and choose *Explain selection with AI* (window ⋯ menu or the palette). You see exactly what will be sent first; only that text goes to Claude, through the gateway. The gateway admin turns it on with `WEBSSH_AI=true` and an Anthropic API key. The audit log records that you asked and how much text was sent, never the text itself.
+
+**Working together**
+- **Share a live session.** A window's ⋯ menu → *Share session* makes a link. Anyone with an account on your gateway who opens it watches the terminal live, or also types into it if you chose *Watch and type*. You see who is watching and can stop sharing at any time; it also ends with the session. Not for end-to-end sessions.
+
+**More protocols**
+- **Telnet** for old switches, routers and lab gear: pick *Telnet* in the host form. It isn't encrypted between the gateway and the device, and you log in at the device's own prompt (webssh never stores Telnet passwords).
+
+**Typing faster**
+- **Command suggestions.** As you type, webssh suggests commands from your history and snippets; Ctrl+Space accepts the first (or click one). History lives in your encrypted vault and syncs between devices. Only lines the server echoed back are kept, so passwords typed at a prompt never are; lines starting with a space are skipped, as in shells. Turn it off or clear it in Settings.
+- **Ask AI for a command** (when the AI helper is on): describe what you want, review the suggested command, and type it into the terminal. It's never run for you.
 
 **Workspace**
 - **Window manager.** Each session is a window you can drag, resize from any edge, minimize to the dock, maximize (or double-click the title), and close. **Split right / split down** opens a second session inside the same window's area. Drag a window to the top edge to maximize it, or to the left/right edge to snap it to half the screen. Use Tile or Cascade to arrange everything.
@@ -144,11 +154,14 @@ vault items ── AES-256-GCM(vault key, aad = item id) ──▶ server (opaqu
 - **The server never sees** your master password, vault key, saved hosts, saved credentials or snippets. A copy of the database alone doesn't decrypt anything. An attacker would have to guess your password through 64 MiB of Argon2id per guess.
 - **The gateway does see** SSH credentials and terminal traffic while a session is open, because it is the SSH client. Run your own gateway (that's the point of self-hosting). The destination host, port and username are recorded in your activity log.
 - **Sign-in:** sessions use an `HttpOnly`, `SameSite=Strict` cookie (`Secure` behind TLS). State-changing requests from other origins are refused. Login, recovery and 2FA attempts are rate-limited per IP and per account. Unknown emails get a decoy salt, so the login form doesn't reveal which accounts exist.
-- **Teams:** every account has a P-256 key pair; the private half is encrypted with your vault key. A team's key is random and encrypted separately for each member's public key, so the server only ever stores ciphertext. Members are confirmed by comparing key fingerprints out of band, which stops a malicious server from slipping in its own key. Two limits to know: removing a member doesn't rotate the team key, so rotate any shared passwords or keys they could have read; and a viewer can't edit the vault but can still use, and therefore read, the credentials shared with them.
+- **Teams:** every account has a P-256 key pair; the private half is encrypted with your vault key. A team's key is random and encrypted separately for each member's public key, so the server only ever stores ciphertext. Members are confirmed by comparing key fingerprints out of band, which stops a malicious server from slipping in its own key. When an owner or admin removes a confirmed member, their browser replaces the team key at once: every item is re-encrypted under a new key that only the remaining members receive, and writes made with the old key are refused. That protects everything from then on, but the person removed may have kept copies of what they could already read, so change those passwords and keys. A viewer can't edit the vault but can still use, and therefore read, the credentials shared with them.
 - **Admins can't read vaults.** The gateway admin manages accounts and policy, but has no way into anyone's personal or team vault they aren't a member of.
 - **Host keys:** trust on first use. The trusted fingerprint is synced in the vault, and a mismatch is a hard block.
 - **Resume** needs a per-session token that only the same account can use; a second browser taking over the session closes the first. While nobody is attached, the gateway stops reading from the server (SSH flow control holds it back) instead of buffering without limit.
 - **End-to-end sessions:** the gateway only relays bytes to the first hop, under the same egress policy; it records the destination, duration and byte counts, but can't see the username, credentials, terminal or file transfers (so file actions in these sessions aren't in the audit log). The WebAssembly client is served by your own gateway, so you still trust the gateway's code; what you gain is that a compromised or curious gateway *at runtime* sees nothing, and nothing sensitive sits in its memory.
+- **Session sharing:** a share link is a random token (stored hashed) and only works for people signed in to the same gateway. *Watch and type* lets them run commands as you on that server, so share it with care; the owner can stop it at any time, and it dies with the session. Watchers who fall behind are disconnected rather than slowing the session down.
+- **Telnet** is plaintext between the gateway and the device; use it only on networks you trust. The egress policy applies as for SSH.
+- **Command history** is stored end-to-end encrypted in your vault. A line is only recorded if the server echoed it (so a password typed at a prompt isn't), and never if it starts with a space.
 - **CLI forwards** authenticate with a random bearer token (stored hashed) that only reaches one target through one session, and dies with either. Use `https`; the CLI warns about plain `http` to anything but localhost. Keep the token out of shell history by passing it in `WEBSSH_TOKEN`.
 - **AI helper:** off unless the admin enables it. Only text the user selects and confirms is sent, to Anthropic's API, via the gateway; never the vault, credentials or anything else. Selected output may contain secrets, which is why the text is shown for review before sending.
 - **Port forwarding** previews live on their own ports, so a forwarded app can't run scripts against webssh. Access needs a one-time link from the forward's creator; webssh cookies are stripped before requests reach the forwarded app, and it can't set cookies named `webssh*`.

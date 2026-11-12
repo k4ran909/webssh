@@ -79,3 +79,63 @@ func (e *Explainer) Explain(ctx context.Context, text, where string) (string, er
 	}
 	return strings.TrimSpace(b.String()), nil
 }
+
+const commandSystem = `You turn a request into a shell command for someone working in a terminal over SSH.
+Reply with exactly one fenced code block holding the command (one line when possible, otherwise a short script), then one short sentence saying what it does.
+If it deletes, overwrites or restarts anything, say so plainly in that sentence.
+Prefer standard, widely available tools. If something about the system matters (distribution, shell), assume a common Linux with bash unless told otherwise.`
+
+// Command asks for a shell command that does what request describes, and
+// returns it with a one-sentence explanation.
+func (e *Explainer) Command(ctx context.Context, request, where string) (string, string, error) {
+	prompt := request
+	if where != "" {
+		prompt = "Terminal: " + where + "\n\n" + request
+	}
+	resp, err := e.client.Beta.Messages.New(ctx, anthropic.BetaMessageNewParams{
+		Model:     anthropic.Model(e.model),
+		MaxTokens: 16000,
+		System:    []anthropic.BetaTextBlockParam{{Text: commandSystem}},
+		Messages: []anthropic.BetaMessageParam{
+			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(prompt)),
+		},
+		OutputConfig: anthropic.BetaOutputConfigParam{Effort: anthropic.BetaOutputConfigEffortLow},
+		Betas:        []anthropic.AnthropicBeta{anthropic.AnthropicBetaServerSideFallback2026_07_01},
+		Fallbacks:    anthropic.BetaFallbacksParamOfDefault(),
+	})
+	if err != nil {
+		return "", "", err
+	}
+	if resp.StopReason == anthropic.BetaStopReasonRefusal {
+		return "", "", ErrRefused
+	}
+	var b strings.Builder
+	for _, block := range resp.Content {
+		if t, ok := block.AsAny().(anthropic.BetaTextBlock); ok {
+			b.WriteString(t.Text)
+		}
+	}
+	cmd, why := SplitCommand(b.String())
+	if cmd == "" {
+		return "", "", errors.New("no command in the answer")
+	}
+	return cmd, why, nil
+}
+
+// SplitCommand takes the first fenced code block as the command and the
+// text after it as the explanation.
+func SplitCommand(answer string) (cmd, why string) {
+	start := strings.Index(answer, "```")
+	if start < 0 {
+		return "", strings.TrimSpace(answer)
+	}
+	rest := answer[start+3:]
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 && !strings.Contains(rest[:nl], " ") {
+		rest = rest[nl+1:] // drop the language tag line
+	}
+	end := strings.Index(rest, "```")
+	if end < 0 {
+		return strings.TrimSpace(rest), ""
+	}
+	return strings.TrimSpace(rest[:end]), strings.TrimSpace(rest[end+3:])
+}

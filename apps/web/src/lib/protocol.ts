@@ -20,12 +20,14 @@ export interface Target extends Endpoint {
   agent?: boolean
   /** End-to-end: SSH runs in this page and the gateway only relays bytes. */
   e2e?: boolean
+  /** Telnet instead of SSH; auth is ignored. */
+  proto?: 'telnet'
 }
 
 type WireHop = Endpoint & { knownHostKey: string }
 
 export type ClientMsg =
-  | (WireHop & { t: 'connect'; jump?: WireHop[]; agent?: boolean; cols: number; rows: number; term: string })
+  | (WireHop & { t: 'connect'; proto?: 'telnet'; jump?: WireHop[]; agent?: boolean; cols: number; rows: number; term: string })
   | { t: 'resume'; token: string; offset: number; cols: number; rows: number }
   | { t: 'resize'; cols: number; rows: number }
   | { t: 'hostkey-accept' }

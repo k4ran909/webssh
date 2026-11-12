@@ -7,9 +7,10 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
 import { algoLabel, gatewayURL, type ClientMsg, type ServerMsg, type Target } from '../lib/protocol'
 import { E2ESocket, type TermSocket } from '../lib/e2e'
-import { forgetKnownHost, getKnownHost, saveKnownHost } from '../lib/vault'
+import { forgetKnownHost, getKnownHost, saveKnownHost, snippetCommands } from '../lib/vault'
 import { applyModifiers, liveSessions, readySessions } from '../lib/live'
 import { CastRecorder } from '../lib/cast'
+import { recordCommand, suggest } from '../lib/history'
 import type { SessionMeta } from '../lib/workspace'
 import { inkTheme } from '../lib/xtermTheme'
 import { Icon } from './icons'
@@ -72,6 +73,10 @@ export const TerminalView = memo(function TerminalView({ id, title, target, font
   titleRef.current = title
 
   const [phase, setPhaseState] = useState<Phase>({ kind: 'connecting' })
+  // Autocomplete: suggestions for the line being typed, and a way to accept one.
+  const [sugg, setSugg] = useState<string[]>([])
+  const [suggTop, setSuggTop] = useState(0)
+  const acceptRef = useRef<(s: string) => void>(() => {})
   const [search, setSearch] = useState<{ open: boolean; q: string; idx: number; count: number }>({ open: false, q: '', idx: -1, count: 0 })
   const searchInput = useRef<HTMLInputElement>(null)
 
@@ -207,7 +212,9 @@ export const TerminalView = memo(function TerminalView({ id, title, target, font
             received = 0
             resumeToken = m.resume ?? ''
             lastReady = { fingerprint: m.fingerprint, algo: m.algo }
-            note(`\x1b[32m✓${DIM} ${algoLabel(m.algo)} host key verified · authenticated as ${target.user}${target.e2e ? ' · end-to-end' : ''}${target.agent ? ' · agent forwarded' : ''}`)
+            note(target.proto === 'telnet'
+              ? `\x1b[33m!${DIM} Connected over Telnet (not encrypted)`
+              : `\x1b[32m✓${DIM} ${algoLabel(m.algo)} host key verified · authenticated as ${target.user}${target.e2e ? ' · end-to-end' : ''}${target.agent ? ' · agent forwarded' : ''}`)
             term.write('\r\n')
             // The PTY was sized at connect time; catch up with any resize since.
             sendRef.current({ t: 'resize', cols: term.cols, rows: term.rows })
@@ -280,6 +287,7 @@ export const TerminalView = memo(function TerminalView({ id, title, target, font
       note(`Connecting to ${target.host}:${target.port}${via ? ` via ${via}` : ''}${target.e2e ? ' (end-to-end)' : ''} …`)
       openSocket({
         t: 'connect',
+        proto: target.proto,
         host: target.host,
         port: target.port,
         user: target.user,
@@ -296,10 +304,68 @@ export const TerminalView = memo(function TerminalView({ id, title, target, font
     }
     start()
 
-    term.attachCustomKeyEventHandler((e) => !(e.type === 'keydown' && isAppShortcut(e)))
+    // ── Autocomplete: follow the line being typed (as far as we can tell) ──
+    let line = ''
+    let known = true // false once arrows, Tab or other edits make the line unknowable
+    let shown: string[] = []
+    const show = (s: string[]) => {
+      if (s.length) {
+        // Just below the cursor's line, or above it near the bottom.
+        const rowH = el.clientHeight / term.rows
+        const below = (term.buffer.active.cursorY + 1) * rowH + 10
+        setSuggTop(below + 30 > el.clientHeight ? Math.max(0, below - rowH - 34) : below)
+      }
+      if (s.join('\n') !== shown.join('\n')) setSugg((shown = s))
+    }
+    const refresh = () => show(known && ready ? suggest(line, snippetCommands()) : [])
+    // Was the line echoed? Passwords typed at a prompt aren't, so they're never recorded.
+    const echoed = () => {
+      const b = term.buffer.active
+      let y = b.baseY + b.cursorY
+      let text = b.getLine(y)?.translateToString(true) ?? ''
+      while (y > 0 && b.getLine(y)?.isWrapped) text = (b.getLine(--y)?.translateToString(true) ?? '') + text
+      return text.includes(line)
+    }
+    const track = (d: string) => {
+      if (d.startsWith('\x1b')) {
+        known = false
+        return refresh()
+      }
+      for (const ch of d) {
+        if (ch === '\r') {
+          if (known && line.trim() && echoed()) recordCommand(line)
+          line = ''
+          known = true
+        } else if (ch === '\x7f' || ch === '\b') line = line.slice(0, -1)
+        else if (ch === '\x03' || ch === '\x15') {
+          line = ''
+          known = true
+        } else if (ch < ' ') known = false
+        else line += ch
+      }
+      refresh()
+    }
+    acceptRef.current = (s: string) => {
+      if (!ready || !known || !s.startsWith(line)) return
+      const rest = s.slice(line.length)
+      send(enc.encode(rest))
+      line = s
+      refresh()
+      term.focus()
+    }
+
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type === 'keydown' && e.ctrlKey && e.code === 'Space' && shown.length) {
+        e.preventDefault()
+        acceptRef.current(shown[0])
+        return false
+      }
+      return !(e.type === 'keydown' && isAppShortcut(e))
+    })
 
     const subs = [
       term.onData((d) => {
+        track(d)
         const bytes = enc.encode(applyModifiers(d))
         if (broadcastRef.current) readySessions().forEach((s) => s.write(bytes))
         else if (ready) send(bytes)
@@ -390,6 +456,16 @@ export const TerminalView = memo(function TerminalView({ id, title, target, font
     <div className="term-root">
       <div className="xterm-wrap">
         <div className="xterm-host" ref={hostRef} />
+        {sugg.length > 0 && (
+          <div className="suggest" role="listbox" aria-label="Suggestions" style={{ top: suggTop }}>
+            {sugg.map((s, i) => (
+              <button key={s} role="option" aria-selected={i === 0} className={i === 0 ? 'on' : ''} title={i === 0 ? 'Ctrl+Space' : 'Click to complete'}
+                onMouseDown={(e) => e.preventDefault()} onClick={() => acceptRef.current(s)}>
+                <span className="mono">{s}</span>{i === 0 && <kbd>Ctrl Space</kbd>}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {search.open && (

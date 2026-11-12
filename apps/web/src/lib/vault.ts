@@ -29,6 +29,8 @@ export interface HostItem {
   agent?: boolean
   /** Run SSH in the browser; the gateway only relays encrypted bytes. */
   e2e?: boolean
+  /** Telnet instead of SSH (unencrypted; log in at the device's prompt). */
+  proto?: 'telnet'
 }
 export interface SnippetItem {
   kind: 'snippet'
@@ -58,7 +60,12 @@ export interface IdentityItem {
   password?: string
   keyId?: string
 }
-export type ItemBody = HostItem | SnippetItem | KnownHostItem | KeyItem | IdentityItem
+/** Recent commands for autocomplete, most recent first (lib/history.ts). */
+export interface HistoryItem {
+  kind: 'history'
+  commands: string[]
+}
+export type ItemBody = HostItem | SnippetItem | KnownHostItem | KeyItem | IdentityItem | HistoryItem
 /** `vault` says where the item lives (personal or a team id); it is never encrypted into the item. */
 export type Entry<T extends ItemBody = ItemBody> = T & { id: string; vault?: string }
 
@@ -116,6 +123,8 @@ class Vault {
   private syncing = false
   private timer = 0
   error?: string
+  /** Team vaults: which team key items are encrypted with (rotations bump it). */
+  epoch?: number
   /** Called when the server says the session is gone. */
   onSignedOut: () => void = () => {}
   /** Called when the gateway's 2FA policy blocks this account. */
@@ -201,7 +210,14 @@ class Vault {
     this.items.set(id, { ...(clean as ItemBody), id, vault: this.id })
     this.emit(this.error)
     const data = await encryptItem(key, id, clean)
-    const { revision } = await api<{ revision: number }>('PUT', `${this.base}/items/${id}`, { data })
+    let revision: number
+    try {
+      ;({ revision } = await api<{ revision: number }>('PUT', `${this.base}/items/${id}`, this.epoch === undefined ? { data } : { data, epoch: this.epoch }))
+    } catch (e) {
+      // Someone replaced the team key: reload it, then the caller can retry.
+      if (e instanceof ApiError && e.code === 'KEY_ROTATED') onKeyRotated()
+      throw e
+    }
     // Only advance the cursor when nothing from another device landed in between.
     if (revision === this.revision + 1) this.revision = revision
     return id
@@ -213,6 +229,17 @@ class Vault {
     this.emit(this.error)
     const { revision } = await api<{ revision: number }>('DELETE', `${this.base}/items/${id}`)
     if (revision === this.revision + 1) this.revision = revision
+  }
+
+  /** Snippet commands, for autocomplete. */
+  commands(): string[] {
+    const out: string[] = []
+    for (const e of this.items.values()) if (e.kind === 'snippet') out.push(e.command)
+    return out
+  }
+
+  history(): Entry<HistoryItem> | undefined {
+    for (const e of this.items.values()) if (e.kind === 'history') return e
   }
 
   knownHost(host: string, port: number): Entry<KnownHostItem> | undefined {
@@ -265,7 +292,11 @@ export interface TeamVaultSpec {
   name: string
   role: Role
   key: CryptoKey
+  epoch: number
 }
+
+let onKeyRotated: () => void = () => {}
+export const setOnKeyRotated = (f: () => void) => { onKeyRotated = f }
 
 /** Opens new team vaults and closes ones the user no longer has. */
 export async function syncTeamVaults(specs: TeamVaultSpec[], errors: Record<string, string> = {}) {
@@ -278,12 +309,21 @@ export async function syncTeamVaults(specs: TeamVaultSpec[], errors: Record<stri
   }
   for (const s of specs) {
     const v = teamVaults.get(s.id)
-    if (v) {
+    if (v && v.epoch === s.epoch) {
       v.name = s.name
       v.role = s.role
       continue
     }
+    if (v) {
+      // The team key was rotated: reopen with the new key (items were re-encrypted).
+      v.name = s.name
+      v.role = s.role
+      v.epoch = s.epoch
+      await v.open(s.key)
+      continue
+    }
     const nv = new Vault(s.id, `/api/teams/${s.id}/vault`, s.name, s.role)
+    nv.epoch = s.epoch
     teamVaults.set(s.id, nv)
     await nv.open(s.key)
   }
@@ -303,6 +343,8 @@ export function closeTeamVaults() {
   teamVaults.clear()
   publish()
 }
+
+export const snippetCommands = () => [vault, ...teamVaults.values()].flatMap((v) => v.commands())
 
 export function vaultFor(id: string | undefined): Vault {
   return (id && teamVaults.get(id)) || vault

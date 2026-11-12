@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS teams (
   name           TEXT NOT NULL,
   require_totp   INTEGER NOT NULL DEFAULT 0,
   vault_revision INTEGER NOT NULL DEFAULT 0,
+  key_epoch      INTEGER NOT NULL DEFAULT 0, -- bumped each time the team key is rotated
   created_at     INTEGER NOT NULL
 );
 

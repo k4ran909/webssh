@@ -65,7 +65,8 @@ export function resolveHost(target: SavedHost, v: VaultView, override?: { user: 
     jump.push({ host: j.host, port: j.port, user: c.user, auth: c.auth, label: label(j) })
   }
 
-  const c = override ?? credentialsFor(target, v)
+  // Telnet logs in at the device's prompt: nothing to resolve.
+  const c = override ?? (target.proto === 'telnet' ? { user: target.user, auth: { type: 'password' as const, password: '' } } : credentialsFor(target, v))
   if (c === 'missing-ref') return { ok: false, reason: 'missing-ref', host: target, message: `The keychain entry used by ${label(target)} was deleted.` }
   if (!c) return { ok: false, reason: 'credentials', host: target, message: `Enter credentials for ${label(target)}.` }
 
@@ -73,6 +74,6 @@ export function resolveHost(target: SavedHost, v: VaultView, override?: { user: 
   return {
     ok: true,
     title: label(target),
-    target: { host: target.host, port: target.port, user: c.user, auth: c.auth, jump: jump.length ? jump : undefined, startup, agent: target.agent || undefined, e2e: target.e2e || undefined },
+    target: { host: target.host, port: target.port, user: c.user, auth: c.auth, jump: jump.length ? jump : undefined, startup, agent: target.agent || undefined, e2e: target.e2e || undefined, proto: target.proto },
   }
 }

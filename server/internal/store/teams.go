@@ -35,6 +35,16 @@ func migrate(db *sql.DB) error {
 			}
 		}
 	}
+	// Teams created before key rotation existed.
+	var hasEpoch int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('teams') WHERE name='key_epoch'`).Scan(&hasEpoch); err != nil {
+		return err
+	}
+	if hasEpoch == 0 {
+		if _, err := db.Exec(`ALTER TABLE teams ADD COLUMN key_epoch INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
 	// The first account administers the gateway.
 	_, err = db.Exec(`UPDATE users SET is_admin = 1 WHERE id = (SELECT id FROM users ORDER BY created_at, rowid LIMIT 1)
 		AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = 1)`)
@@ -104,6 +114,7 @@ type Team struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	RequireTOTP bool   `json:"requireTotp"`
+	KeyEpoch    int64  `json:"keyEpoch"`
 	// The caller's membership.
 	Role       string `json:"role"`
 	WrappedKey string `json:"wrappedKey,omitempty"`
@@ -128,7 +139,7 @@ func (d *DB) CreateTeam(ctx context.Context, id, name, ownerID, wrappedKey strin
 }
 
 func (d *DB) TeamsForUser(ctx context.Context, userID string) ([]Team, error) {
-	rows, err := d.sql.QueryContext(ctx, `SELECT t.id, t.name, t.require_totp, m.role, m.wrapped_key
+	rows, err := d.sql.QueryContext(ctx, `SELECT t.id, t.name, t.require_totp, t.key_epoch, m.role, m.wrapped_key
 		FROM teams t JOIN team_members m ON m.team_id = t.id WHERE m.user_id = ? ORDER BY t.name`, userID)
 	if err != nil {
 		return nil, err
@@ -137,7 +148,7 @@ func (d *DB) TeamsForUser(ctx context.Context, userID string) ([]Team, error) {
 	out := []Team{}
 	for rows.Next() {
 		var t Team
-		if err := rows.Scan(&t.ID, &t.Name, &t.RequireTOTP, &t.Role, &t.WrappedKey); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.RequireTOTP, &t.KeyEpoch, &t.Role, &t.WrappedKey); err != nil {
 			return nil, err
 		}
 		t.Confirmed = t.WrappedKey != ""
@@ -149,9 +160,9 @@ func (d *DB) TeamsForUser(ctx context.Context, userID string) ([]Team, error) {
 // Membership returns the caller's team row (role and confirmation), or ErrNotFound.
 func (d *DB) Membership(ctx context.Context, teamID, userID string) (*Team, error) {
 	var t Team
-	err := d.sql.QueryRowContext(ctx, `SELECT t.id, t.name, t.require_totp, m.role, m.wrapped_key
+	err := d.sql.QueryRowContext(ctx, `SELECT t.id, t.name, t.require_totp, t.key_epoch, m.role, m.wrapped_key
 		FROM teams t JOIN team_members m ON m.team_id = t.id WHERE t.id = ? AND m.user_id = ?`, teamID, userID).
-		Scan(&t.ID, &t.Name, &t.RequireTOTP, &t.Role, &t.WrappedKey)
+		Scan(&t.ID, &t.Name, &t.RequireTOTP, &t.KeyEpoch, &t.Role, &t.WrappedKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -405,4 +416,77 @@ func (d *DB) AllAudit(ctx context.Context, userID string, limit int) ([]AuditEve
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// ErrConflict means the data changed since the caller read it.
+var ErrConflict = errors.New("conflict")
+
+// RotateTeamKey swaps in a new team key in one step: every item re-encrypted
+// under it, and the key wrapped for every confirmed member. It applies only
+// if nothing changed since the caller read the vault (same revision and
+// epoch), and only if items and keys cover exactly the vault and the
+// confirmed members, so nobody is left out and nothing stays on the old key.
+func (d *DB) RotateTeamKey(ctx context.Context, teamID string, epoch, revision int64, items map[string]string, keys map[string]string, by string) error {
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var curEpoch, curRev int64
+	if err := tx.QueryRowContext(ctx, `SELECT key_epoch, vault_revision FROM teams WHERE id=?`, teamID).Scan(&curEpoch, &curRev); err != nil {
+		return err
+	}
+	if curEpoch != epoch || curRev != revision {
+		return ErrConflict
+	}
+	confirmed := map[string]bool{}
+	rows, err := tx.QueryContext(ctx, `SELECT user_id FROM team_members WHERE team_id=? AND wrapped_key <> ''`, teamID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		confirmed[id] = true
+	}
+	rows.Close()
+	if len(confirmed) != len(keys) {
+		return ErrConflict
+	}
+	for id := range keys {
+		if !confirmed[id] {
+			return ErrConflict
+		}
+	}
+	var live int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM team_items WHERE team_id=? AND deleted=0`, teamID).Scan(&live); err != nil {
+		return err
+	}
+	if live != len(items) {
+		return ErrConflict
+	}
+	rev := curRev + 1
+	now := time.Now().Unix()
+	for id, data := range items {
+		res, err := tx.ExecContext(ctx, `UPDATE team_items SET data=?, revision=?, updated_by=?, updated_at=? WHERE team_id=? AND id=? AND deleted=0`,
+			data, rev, by, now, teamID, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return ErrConflict
+		}
+	}
+	for id, k := range keys {
+		if _, err := tx.ExecContext(ctx, `UPDATE team_members SET wrapped_key=? WHERE team_id=? AND user_id=?`, k, teamID, id); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE teams SET key_epoch=key_epoch+1, vault_revision=? WHERE id=?`, rev, teamID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

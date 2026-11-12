@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -102,5 +103,96 @@ func TestTCPForwardForCLI(t *testing.T) {
 	}
 	if s := cliGet(t, base+"/api/cli/forward", f.Token); s != http.StatusUnauthorized {
 		t.Fatalf("after delete: %d", s)
+	}
+}
+
+func createTCP(t *testing.T, base string, body map[string]any) tcpForwardInfo {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	resp, err := http.Post(base+"/api/tcp-forwards", "application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var f tcpForwardInfo
+	_ = json.NewDecoder(resp.Body).Decode(&f)
+	if f.Token == "" {
+		t.Fatalf("create %v: %d", body, resp.StatusCode)
+	}
+	return f
+}
+
+func cliDial(t *testing.T, ctx context.Context, url, token string) (*websocket.Conn, *http.Response, error) {
+	t.Helper()
+	return websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + token}}})
+}
+
+func TestSocksAndRemoteForwards(t *testing.T) {
+	port, fp, _ := testSSHServerWith(t, serverOpts{forward: true})
+	echo := echoServer(t)
+	url := startGateway(t, true)
+	base := httpBase(url)
+	wsBase := "ws" + strings.TrimPrefix(base, "http")
+	_, ready := connectReady(t, url, port, fp, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// SOCKS: each connection names its destination.
+	s := createTCP(t, base, map[string]any{"handle": ready.SFTP, "kind": "socks"})
+	ws, _, err := cliDial(t, ctx, wsBase+"/ws/cli/forward?to=127.0.0.1:"+strconv.Itoa(echo), s.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+	c.Write([]byte("via socks"))
+	buf := make([]byte, 9)
+	if _, err := io.ReadFull(c, buf); err != nil || string(buf) != "via socks" {
+		t.Fatalf("socks echo: %q %v", buf, err)
+	}
+	c.Close()
+	// Nothing listening there: the CLI gets an HTTP error, not a dead socket.
+	if _, res, err := cliDial(t, ctx, wsBase+"/ws/cli/forward?to=127.0.0.1:1", s.Token); err == nil || res == nil || res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("closed port: %v %v", res, err)
+	}
+
+	// Remote: the server listens; its connections reach the CLI.
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	rport := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	r := createTCP(t, base, map[string]any{"handle": ready.SFTP, "kind": "remote", "host": "127.0.0.1", "port": rport})
+	ctl, _, err := cliDial(t, ctx, wsBase+"/ws/cli/control", r.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, data, err := ctl.Read(ctx); err != nil || !strings.Contains(string(data), "listening") {
+		t.Fatalf("control: %s %v", data, err)
+	}
+	if _, res, _ := cliDial(t, ctx, wsBase+"/ws/cli/control", r.Token); res == nil || res.StatusCode != http.StatusConflict {
+		t.Fatal("a second CLI on the same remote forward should be refused")
+	}
+	incoming, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(rport))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer incoming.Close()
+	incoming.Write([]byte("hello"))
+	_, data, err := ctl.Read(ctx)
+	var m struct{ T, ID string }
+	if err != nil || json.Unmarshal(data, &m) != nil || m.T != "conn" {
+		t.Fatalf("announce: %s %v", data, err)
+	}
+	dws, _, err := cliDial(t, ctx, wsBase+"/ws/cli/forward?accept="+m.ID, r.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dc := websocket.NetConn(ctx, dws, websocket.MessageBinary)
+	got := make([]byte, 5)
+	if _, err := io.ReadFull(dc, got); err != nil || string(got) != "hello" {
+		t.Fatalf("remote → cli: %q %v", got, err)
+	}
+	dc.Write([]byte("back"))
+	back := make([]byte, 4)
+	if _, err := io.ReadFull(incoming, back); err != nil || string(back) != "back" {
+		t.Fatalf("cli → remote: %q %v", back, err)
 	}
 }

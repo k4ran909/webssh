@@ -235,3 +235,12 @@ func (a *API) StartJanitor(ctx context.Context) {
 		}
 	}()
 }
+
+// EmailOf names an account for the gateway (e.g. who is watching a shared session).
+func (a *API) EmailOf(userID string) string {
+	u, err := a.db.UserByID(context.Background(), userID)
+	if err != nil {
+		return ""
+	}
+	return u.Email
+}

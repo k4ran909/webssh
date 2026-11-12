@@ -30,7 +30,9 @@ import (
 // authenticated on its own. sftp is a handle for the file API that reuses
 // this session's SSH connection.
 type ClientMsg struct {
-	T            string `json:"t"`
+	T string `json:"t"`
+	// Proto is "" (SSH) or "telnet"; telnet has no credentials or jump hosts.
+	Proto        string `json:"proto,omitempty"`
 	Host         string `json:"host,omitempty"`
 	Port         int    `json:"port,omitempty"`
 	User         string `json:"user,omitempty"`
@@ -115,16 +117,24 @@ func AsError(err error, fallback string) *Error {
 
 var termRe = regexp.MustCompile(`^[A-Za-z0-9.+-]{1,64}$`)
 
-func (h *Hop) Validate() error {
-	h.Host = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(h.Host), "["), "]")
-	if h.Host == "" || len(h.Host) > 253 || strings.ContainsAny(h.Host, " \t\r\n/\\@") {
+// validHostPort normalises and checks a host and port (0 means def).
+func validHostPort(host *string, port *int, def int) error {
+	*host = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(*host), "["), "]")
+	if *host == "" || len(*host) > 253 || strings.ContainsAny(*host, " \t\r\n/\\@") {
 		return errors.New("invalid host")
 	}
-	if h.Port == 0 {
-		h.Port = 22
+	if *port == 0 {
+		*port = def
 	}
-	if h.Port < 1 || h.Port > 65535 {
+	if *port < 1 || *port > 65535 {
 		return errors.New("invalid port")
+	}
+	return nil
+}
+
+func (h *Hop) Validate() error {
+	if err := validHostPort(&h.Host, &h.Port, 22); err != nil {
+		return err
 	}
 	if h.User == "" || len(h.User) > 255 || strings.ContainsAny(h.User, "\x00\r\n") {
 		return errors.New("invalid username")
@@ -164,6 +174,17 @@ func (m *ClientMsg) DropCredentials() {
 }
 
 func (m *ClientMsg) Validate() error {
+	switch m.Proto {
+	case "":
+	case "telnet":
+		if err := validHostPort(&m.Host, &m.Port, 23); err != nil {
+			return err
+		}
+		m.Auth, m.Jump, m.Agent = nil, nil, false
+		return m.validTerm()
+	default:
+		return errors.New("unknown protocol")
+	}
 	t := m.Target()
 	if err := t.Validate(); err != nil {
 		return err
@@ -177,6 +198,10 @@ func (m *ClientMsg) Validate() error {
 			return errors.New("jump host: " + err.Error())
 		}
 	}
+	return m.validTerm()
+}
+
+func (m *ClientMsg) validTerm() error {
 	if m.Term == "" {
 		m.Term = "xterm-256color"
 	} else if !termRe.MatchString(m.Term) {

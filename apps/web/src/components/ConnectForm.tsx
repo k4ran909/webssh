@@ -1,7 +1,7 @@
 import { useRef, useState, type FormEvent } from 'react'
 import type { Auth } from '../lib/protocol'
 import { HOST_COLORS, PERSONAL, type AuthMethod, type Identity, type SavedHost, type SavedKey, type Snippet, type VaultInfo } from '../lib/vault'
-import { Logo } from './icons'
+import { Icon, Logo } from './icons'
 
 const MAX_KEY_BYTES = 64 * 1024
 
@@ -40,6 +40,7 @@ export interface ConnectInitial {
   startupSnippetId?: string
   agent?: boolean
   e2e?: boolean
+  proto?: 'telnet'
   /** Which vault the host lives in (personal or a team id). */
   vault?: string
   /** Editing a saved host that already has inline credentials. */
@@ -66,6 +67,7 @@ export interface ConnectResult {
   startupSnippetId?: string
   agent?: boolean
   e2e?: boolean
+  proto?: 'telnet'
   vault: string
 }
 
@@ -114,6 +116,11 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
   const [startupSnippetId, setStartupSnippetId] = useState(initial.startupSnippetId ?? '')
   const [agent, setAgent] = useState(!!initial.agent)
   const [e2e, setE2e] = useState(!!initial.e2e)
+  const [telnet, setTelnet] = useState(initial.proto === 'telnet')
+  const pickProto = (t: boolean) => {
+    setTelnet(t)
+    setPort((p) => (t && p === '22' ? '23' : !t && p === '23' ? '22' : p))
+  }
   const [vaultId, setVaultId] = useState(initial.vault ?? PERSONAL)
   const vaultChoices = (choices.vaults ?? []).filter((v) => v.writable && !v.error)
   const [more, setMore] = useState(!!(initial.group || initial.jumpHostId || initial.startupSnippetId || initial.agent || initial.e2e))
@@ -142,8 +149,15 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
     if (!parsed) return setError('Enter a hostname or IP address.')
     const finalUser = identity?.username ?? parsed.user ?? user.trim()
     const finalPort = parsed.port ?? Number(port)
-    if (!finalUser) return setError('Enter a username.')
     if (!Number.isInteger(finalPort) || finalPort < 1 || finalPort > 65535) return setError('Port must be 1–65535.')
+    if (telnet) {
+      return onSubmit({
+        host: parsed.host, port: finalPort, user: parsed.user ?? user.trim(), method: 'password', proto: 'telnet',
+        save, storeCreds: false, clearCreds: true, label: label.trim(), color, group: group.trim() || undefined,
+        startupSnippetId: startupSnippetId || undefined, vault: vaultId,
+      })
+    }
+    if (!finalUser) return setError('Enter a username.')
     if (source === 'keychain' && !ref) return setError('Pick a key or identity, or add one in the keychain.')
     const given = source === 'password' ? !!password : source === 'key' ? !!key.trim() : false
     if (!saving && source !== 'keychain' && !given) return setError(source === 'password' ? 'Enter a password.' : 'Paste or load a private key.')
@@ -166,6 +180,10 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
       <h1>{title}</h1>
       <p className="sub">{notice ?? (saving ? 'Saved hosts sync to your encrypted vault.' : 'Open an SSH session in your browser.')}</p>
 
+      <div className="seg proto-seg" role="tablist" aria-label="Protocol">
+        <button type="button" role="tab" aria-selected={!telnet} className={!telnet ? 'on' : ''} onClick={() => pickProto(false)}>SSH</button>
+        <button type="button" role="tab" aria-selected={telnet} className={telnet ? 'on' : ''} onClick={() => pickProto(true)}>Telnet</button>
+      </div>
       <div className="row2">
         <label className="fld">
           <span>Host</span>
@@ -176,6 +194,8 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
           <input className="input mono" value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ''))} inputMode="numeric" />
         </label>
       </div>
+      {telnet && <p className="warn-note"><Icon name="alert" size={13} /> Telnet isn't encrypted between the gateway and the device. You log in at the device's own prompt; webssh doesn't store Telnet passwords.</p>}
+      {!telnet && <>
       <label className="fld">
         <span>Username {identity && <em className="hint">(from identity)</em>}</span>
         <input className="input mono" value={identity ? identity.username : user} disabled={!!identity} onChange={(e) => setUser(e.target.value)} placeholder="root" spellCheck={false} autoCapitalize="off" />
@@ -229,7 +249,8 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
         </>
       )}
 
-      {saving && initial.hasCreds && source !== 'keychain' && (
+      </>}
+      {!telnet && saving && initial.hasCreds && source !== 'keychain' && (
         <label className="check">
           <input type="checkbox" checked={clearCreds} onChange={(e) => setClearCreds(e.target.checked)} />
           <span>Remove saved credentials</span>
@@ -241,7 +262,7 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
           <span>Save to hosts</span>
         </label>
       )}
-      {!saving && save && source !== 'keychain' && (
+      {!telnet && !saving && save && source !== 'keychain' && (
         <label className="check indent">
           <input type="checkbox" checked={storeCreds} onChange={(e) => setStoreCreds(e.target.checked)} />
           <span>Remember {source === 'password' ? 'password' : 'key'} <em className="hint">(end-to-end encrypted)</em></span>
@@ -279,7 +300,7 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
       )}
       {more && (
         <div className="more">
-          {jumpChoices.length > 0 && (
+          {!telnet && jumpChoices.length > 0 && (
             <label className="fld">
               <span>Jump host <em className="hint">(ProxyJump)</em></span>
               <select className="input select wide" value={jumpHostId} onChange={(e) => setJumpHostId(e.target.value)}>
@@ -288,11 +309,11 @@ export function ConnectForm({ title, purpose, initial, choices, offerSave = true
               </select>
             </label>
           )}
-          <label className="check">
+          {!telnet && <label className="check">
             <input type="checkbox" checked={e2e} onChange={(e) => setE2e(e.target.checked)} />
             <span>End-to-end <em className="hint">(SSH runs in this browser; the gateway only relays encrypted traffic and never sees the password, key or terminal. No resume after a network drop, no port forwarding)</em></span>
-          </label>
-          {source !== 'password' && (
+          </label>}
+          {!telnet && source !== 'password' && (
             <label className="check">
               <input type="checkbox" checked={agent} onChange={(e) => setAgent(e.target.checked)} />
               <span>Forward SSH agent <em className="hint">(lets the server use this key, e.g. for git; only for servers you trust)</em></span>

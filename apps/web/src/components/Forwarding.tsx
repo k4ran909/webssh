@@ -12,9 +12,12 @@ export interface ForwardInfo {
 }
 
 /** A raw TCP forward, carried to a local port by the companion CLI. */
+export type TcpKind = 'local' | 'socks' | 'remote'
+
 export interface TcpForwardInfo {
   id: string
   handle: string
+  kind: TcpKind
   target: string
   conns: number
   token?: string
@@ -58,7 +61,7 @@ export function ForwardDialog({ session, onClose, onCreated }: { session: Sessio
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [made, setMade] = useState<ForwardInfo | null>(null)
-  const [mode, setMode] = useState<'http' | 'tcp'>('http')
+  const [mode, setMode] = useState<'http' | TcpKind>('http')
   const [madeTcp, setMadeTcp] = useState<TcpForwardInfo | null>(null)
   const [windows, setWindows] = useState(() => navigator.userAgent.includes('Windows'))
   const [copied, setCopied] = useState(false)
@@ -66,13 +69,13 @@ export function ForwardDialog({ session, onClose, onCreated }: { session: Sessio
   const submit = async (e: FormEvent) => {
     e.preventDefault()
     if (isE2EHandle(session.meta.sftp)) return setError("This is an end-to-end session: the gateway can't see inside it, so it can't forward ports for it. Turn off end-to-end for this host to forward ports.")
-    const p = Number(port)
+    const p = mode === 'socks' ? 1 : Number(port)
     if (!Number.isInteger(p) || p < 1 || p > 65535) return setError('Port must be 1–65535.')
     setBusy(true)
     setError('')
     try {
       const req = { handle: session.meta.sftp, host: host.trim(), port: p }
-      if (mode === 'tcp') setMadeTcp(await api<TcpForwardInfo>('POST', '/api/tcp-forwards', req))
+      if (mode !== 'http') setMadeTcp(await api<TcpForwardInfo>('POST', '/api/tcp-forwards', { ...req, kind: mode }))
       else setMade(await api<ForwardInfo>('POST', '/api/forwards', req))
       onCreated()
     } catch (err) {
@@ -94,8 +97,16 @@ export function ForwardDialog({ session, onClose, onCreated }: { session: Sessio
         </div>
         {madeTcp ? (
           <div className="stack-form">
-            <p className="ok-note" style={{ margin: 0 }}>Ready to forward {madeTcp.target}</p>
-            <p className="pop-sub">Run this on your computer with the <b>webssh-cli</b> companion. It listens on 127.0.0.1:{madeTcp.target.split(':').pop()} (change it with <code>-listen</code>). The token is shown only now; it stops working when you stop the forward or the session ends.</p>
+            <p className="ok-note" style={{ margin: 0 }}>Ready: {madeTcp.kind === 'socks' ? 'SOCKS proxy' : madeTcp.target}</p>
+            <p className="pop-sub">
+              Run this on your computer with the <b>webssh-cli</b> companion.{' '}
+              {madeTcp.kind === 'socks'
+                ? <>It runs a SOCKS5 proxy on 127.0.0.1:1080 (change it with <code>-listen</code>); point your browser or app at it to use the server's network.</>
+                : madeTcp.kind === 'remote'
+                  ? <>The server listens on {madeTcp.target}; connections to it arrive at 127.0.0.1:{madeTcp.target.split(':').pop()} on your computer (change it with <code>-to</code>).</>
+                  : <>It listens on 127.0.0.1:{madeTcp.target.split(':').pop()} (change it with <code>-listen</code>).</>}
+              {' '}The token is shown only now; it stops working when you stop the forward or the session ends.
+            </p>
             <div className="seg" role="tablist" style={{ alignSelf: 'flex-start' }}>
               <button role="tab" aria-selected={!windows} className={!windows ? 'on' : ''} onClick={() => setWindows(false)}>macOS / Linux</button>
               <button role="tab" aria-selected={windows} className={windows ? 'on' : ''} onClick={() => setWindows(true)}>PowerShell</button>
@@ -120,27 +131,35 @@ export function ForwardDialog({ session, onClose, onCreated }: { session: Sessio
           <form className="stack-form" onSubmit={submit}>
             <div className="seg" role="tablist" aria-label="Forward type">
               <button type="button" role="tab" aria-selected={mode === 'http'} className={mode === 'http' ? 'on' : ''} onClick={() => setMode('http')}>In the browser (HTTP)</button>
-              <button type="button" role="tab" aria-selected={mode === 'tcp'} className={mode === 'tcp' ? 'on' : ''} onClick={() => setMode('tcp')}>Local port (CLI)</button>
+              <button type="button" role="tab" aria-selected={mode === 'local'} className={mode === 'local' ? 'on' : ''} onClick={() => setMode('local')}>Local port</button>
+              <button type="button" role="tab" aria-selected={mode === 'socks'} className={mode === 'socks' ? 'on' : ''} onClick={() => setMode('socks')}>SOCKS</button>
+              <button type="button" role="tab" aria-selected={mode === 'remote'} className={mode === 'remote' ? 'on' : ''} onClick={() => setMode('remote')}>Remote</button>
             </div>
-            <div className="row2">
-              <label className="fld">
-                <span>Host <em className="hint">(as seen from the server)</em></span>
-                <input className="input mono" value={host} onChange={(e) => setHost(e.target.value)} spellCheck={false} />
-              </label>
-              <label className="fld">
-                <span>Port</span>
-                <input className="input mono" value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ''))} placeholder="3000" inputMode="numeric" autoFocus />
-              </label>
-            </div>
+            {mode !== 'socks' && (
+              <div className="row2">
+                <label className="fld">
+                  <span>{mode === 'remote' ? 'Listen on' : 'Host'} <em className="hint">{mode === 'remote' ? '(address on the server)' : '(as seen from the server)'}</em></span>
+                  <input className="input mono" value={host} onChange={(e) => setHost(e.target.value)} spellCheck={false} />
+                </label>
+                <label className="fld">
+                  <span>{mode === 'remote' ? 'Port on the server' : 'Port'}</span>
+                  <input className="input mono" value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ''))} placeholder={mode === 'remote' ? '8080' : '3000'} inputMode="numeric" autoFocus />
+                </label>
+              </div>
+            )}
             <p className="pop-sub" style={{ marginTop: -4 }}>
               {mode === 'http'
                 ? 'Opens in a new tab. HTTP and WebSocket apps only (dashboards, dev servers).'
-                : 'Any TCP service (databases, Redis, RDP) on a port of your own computer, through the webssh-cli companion.'}
+                : mode === 'local'
+                  ? 'Any TCP service on the server side (databases, Redis, RDP) on a port of your computer, through the webssh-cli companion (like ssh -L).'
+                  : mode === 'socks'
+                    ? "A SOCKS5 proxy on your computer: apps that use it reach anything the server can reach (like ssh -D). Needs webssh-cli."
+                    : 'The server listens on a port, and connections to it reach a port on your computer, e.g. to show a local dev server (like ssh -R). Needs webssh-cli.'}
             </p>
             {error && <p className="form-error">{error}</p>}
             <div className="form-actions">
               <button className="btn lg" type="button" onClick={onClose}>Cancel</button>
-              <button className="btn primary lg" type="submit" disabled={busy || !port}>{busy ? 'Starting…' : 'Forward'}</button>
+              <button className="btn primary lg" type="submit" disabled={busy || (mode !== 'socks' && !port)}>{busy ? 'Starting…' : 'Forward'}</button>
             </div>
           </form>
         )}
@@ -180,7 +199,7 @@ export function ForwardsPanel({ forwards, tcp, available, sessions, onChange }: 
         <div key={f.id} className="fwd-row">
           <div className="kc-main">
             <span className="kc-title mono">{f.target}</span>
-            <span className="kc-sub">{name(f.handle)} · local port via CLI · {f.conns} open</span>
+            <span className="kc-sub">{name(f.handle)} · {f.kind === 'socks' ? 'SOCKS via CLI' : f.kind === 'remote' ? 'remote via CLI' : 'local port via CLI'} · {f.conns} open</span>
           </div>
           <button className="icon-btn sm" title="Stop forwarding" aria-label={`Stop ${f.target}`} onClick={() => stop(`/api/tcp-forwards/${f.id}`)}><Icon name="x" size={14} /></button>
         </div>

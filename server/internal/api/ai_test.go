@@ -12,6 +12,10 @@ import (
 type fakeAI struct{ got, where string }
 
 func (f *fakeAI) Model() string { return "test-model" }
+func (f *fakeAI) Command(_ context.Context, request, _ string) (string, string, error) {
+	cmd, why := ai.SplitCommand("```bash\nls -la /var/log\n```\nLists the log folder, " + request)
+	return cmd, why, nil
+}
 func (f *fakeAI) Explain(_ context.Context, text, where string) (string, error) {
 	f.got, f.where = text, where
 	if strings.Contains(text, "refuse") {
@@ -69,6 +73,11 @@ func TestAIHelper(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("want 2 ai.explain events, got %d", n)
+	}
+
+	var cmd struct{ Command, Explanation string }
+	if s := c.do("POST", "/api/ai/command", map[string]string{"request": "show logs"}, &cmd); s != 200 || cmd.Command != "ls -la /var/log" || cmd.Explanation == "" {
+		t.Fatalf("command: %d %+v", s, cmd)
 	}
 
 	// Signed-out requests are refused.

@@ -92,7 +92,7 @@ func serveTestConn(conn net.Conn, cfg *ssh.ServerConfig, opts serverOpts) {
 		conn.Close()
 		return
 	}
-	go ssh.DiscardRequests(reqs)
+	go serveGlobal(sconn, reqs, opts)
 	for nc := range chans {
 		if nc.ChannelType() == "direct-tcpip" && opts.forward {
 			forwardTCP(nc)
@@ -215,6 +215,7 @@ func startGatewayWith(t *testing.T, cfg config.Config) string {
 	mux := http.NewServeMux()
 	mux.Handle("GET /ws", g)
 	mux.Handle("GET /relay", http.HandlerFunc(g.ServeRelay))
+	mux.Handle("GET /watch", http.HandlerFunc(g.ServeWatch))
 	g.SFTPRoutes(mux, func(h http.Handler) http.Handler { return h })
 	g.ForwardRoutes(mux, func(h http.Handler) http.Handler { return h })
 	g.CLIRoutes(mux)
@@ -456,5 +457,57 @@ func TestValidate(t *testing.T) {
 		if err := m.Validate(); err == nil {
 			t.Errorf("%s: expected error", name)
 		}
+	}
+}
+
+// serveGlobal answers tcpip-forward (remote forwarding) when the test server
+// acts as a bastion: it listens on loopback and opens a forwarded-tcpip
+// channel to the client for each incoming connection.
+func serveGlobal(sconn *ssh.ServerConn, reqs <-chan *ssh.Request, opts serverOpts) {
+	for req := range reqs {
+		if req.Type != "tcpip-forward" || !opts.forward {
+			if req.WantReply {
+				req.Reply(false, nil)
+			}
+			continue
+		}
+		var p struct {
+			Addr string
+			Port uint32
+		}
+		if ssh.Unmarshal(req.Payload, &p) != nil {
+			req.Reply(false, nil)
+			continue
+		}
+		ln, err := net.Listen("tcp", net.JoinHostPort(p.Addr, strconv.Itoa(int(p.Port))))
+		if err != nil {
+			req.Reply(false, nil)
+			continue
+		}
+		port := uint32(ln.Addr().(*net.TCPAddr).Port)
+		req.Reply(true, ssh.Marshal(struct{ Port uint32 }{port}))
+		go func() { sconn.Wait(); ln.Close() }()
+		go func() {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				payload := ssh.Marshal(struct {
+					Addr       string
+					Port       uint32
+					OriginAddr string
+					OriginPort uint32
+				}{p.Addr, port, "127.0.0.1", 1})
+				ch, reqs, err := sconn.OpenChannel("forwarded-tcpip", payload)
+				if err != nil {
+					c.Close()
+					continue
+				}
+				go ssh.DiscardRequests(reqs)
+				go func() { io.Copy(ch, c); ch.CloseWrite() }()
+				go func() { io.Copy(c, ch); c.Close() }()
+			}
+		}()
 	}
 }

@@ -29,7 +29,7 @@ function snapRect(snap: Exclude<Snap, null>, area: { w: number; h: number }): Re
   return { x: snap === 'left' ? 0 : area.w - w, y: 0, w, h: area.h }
 }
 
-export type WindowAction = 'split-right' | 'split-down' | 'duplicate' | 'forward' | 'record' | 'explain'
+export type WindowAction = 'split-right' | 'split-down' | 'duplicate' | 'forward' | 'share' | 'record' | 'explain' | 'ask'
 
 export const WindowFrame = memo(function WindowFrame({ session, focused, tabbed, broadcast, area, dispatch, onAction, onSearch, children }: Props) {
   const [menu, setMenu] = useState(false)
@@ -158,10 +158,11 @@ export const WindowFrame = memo(function WindowFrame({ session, focused, tabbed,
                     ['split-down', 'splitDown', 'Split down'],
                     ['duplicate', 'copy', 'Duplicate session'],
                     ['forward', 'forward', 'Forward a port…'],
+                    ['share', 'share', 'Share session…'],
                     ['record', 'record', meta.recording ? 'Stop recording & save' : 'Record session'],
-                    ...(ai.enabled ? [['explain', 'sparkle', 'Explain selection with AI…'] as const] : []),
+                    ...(ai.enabled ? [['explain', 'sparkle', 'Explain selection with AI…'] as const, ['ask', 'sparkle', 'Ask AI for a command…'] as const] : []),
                   ] as const).map(([act, icon, label]) => (
-                    <button key={act} className="pop-item" disabled={(act === 'forward' || act === 'record') && meta.phase !== 'ready' && !meta.recording}
+                    <button key={act} className="pop-item" disabled={(act === 'forward' || act === 'record' || act === 'share') && meta.phase !== 'ready' && !meta.recording}
                       onClick={() => { setMenu(false); onAction(id, act) }}>
                       <Icon name={icon} size={14} /><span>{label}</span>
                     </button>

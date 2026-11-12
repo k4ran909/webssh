@@ -56,6 +56,7 @@ func (a *API) teamRoutes(mux *http.ServeMux) {
 	mux.Handle("DELETE /api/teams/{team}/invites", h(a.teamGuard("admin", false, a.revokeTeamInvite)))
 	mux.Handle("GET /api/teams/{team}/vault", h(a.teamGuard("viewer", true, a.teamVaultList)))
 	mux.Handle("PUT /api/teams/{team}/vault/items/{id}", h(a.teamGuard("member", true, a.teamVaultPut)))
+	mux.Handle("POST /api/teams/{team}/rotate", h(a.teamGuard("admin", true, a.teamRotate)))
 	mux.Handle("DELETE /api/teams/{team}/vault/items/{id}", h(a.teamGuard("member", true, a.teamVaultDelete)))
 }
 
@@ -382,12 +383,18 @@ func (a *API) teamVaultPut(w http.ResponseWriter, r *http.Request, t *store.Team
 	id := r.PathValue("id")
 	var req struct {
 		Data string `json:"data"`
+		// Which team key the item is encrypted with; stale writes are refused.
+		Epoch int64 `json:"epoch"`
 	}
 	if !itemIDRe.MatchString(id) {
 		writeErr(w, http.StatusBadRequest, "BAD_ID", "Invalid item id.")
 		return
 	}
 	if !decode(w, r, &req) {
+		return
+	}
+	if req.Epoch != t.KeyEpoch {
+		writeErr(w, http.StatusConflict, "KEY_ROTATED", "This team's key was just changed. Try again in a moment.")
 		return
 	}
 	if _, err := b64(req.Data, 28, maxItemBytes); err != nil {
@@ -438,4 +445,49 @@ func writeAuditCSV(w http.ResponseWriter, name string, events []store.AuditEvent
 		_ = cw.Write([]string{e.CreatedAt.UTC().Format(time.RFC3339), e.Email, e.Action, e.IP, e.Detail})
 	}
 	cw.Flush()
+}
+
+// teamRotate replaces the team key (see store.RotateTeamKey). The browser of
+// an owner or admin did the work: it re-encrypted every item under a fresh
+// key and wrapped that key for each confirmed member. Used after removing
+// someone, so the new key never reaches them.
+func (a *API) teamRotate(w http.ResponseWriter, r *http.Request, t *store.Team) {
+	var req struct {
+		Epoch    int64                       `json:"epoch"`
+		Revision int64                       `json:"revision"`
+		Items    []struct{ ID, Data string } `json:"items"`
+		Keys     map[string]string           `json:"keys"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	items := make(map[string]string, len(req.Items))
+	for _, it := range req.Items {
+		if !itemIDRe.MatchString(it.ID) {
+			writeErr(w, http.StatusBadRequest, "BAD_ID", "Invalid item id.")
+			return
+		}
+		if _, err := b64(it.Data, 28, maxItemBytes); err != nil {
+			writeErr(w, http.StatusBadRequest, "BAD_ITEM", "Item must be encrypted base64 under 256 KB.")
+			return
+		}
+		items[it.ID] = it.Data
+	}
+	for _, k := range req.Keys {
+		if k == "" || len(k) > 4096 {
+			writeErr(w, http.StatusBadRequest, "BAD_KEY", "Invalid wrapped key.")
+			return
+		}
+	}
+	err := a.db.RotateTeamKey(r.Context(), t.ID, req.Epoch, req.Revision, items, req.Keys, current(r.Context()).user.ID)
+	if errors.Is(err, store.ErrConflict) {
+		writeErr(w, http.StatusConflict, "ROTATE_CONFLICT", "The team changed while the key was being replaced. Trying again usually works.")
+		return
+	}
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	a.Record(current(r.Context()).user.ID, "team.key.rotated", a.ClientIP(r), map[string]any{"team": t.Name, "members": len(req.Keys), "items": len(items)})
+	writeJSON(w, http.StatusOK, map[string]int64{"epoch": req.Epoch + 1})
 }

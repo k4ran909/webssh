@@ -34,6 +34,8 @@ type Hooks struct {
 	ClientIP func(*http.Request) string
 	// Audit records metadata only (never keystrokes or credentials).
 	Audit func(userID, action, ip string, detail any)
+	// Email names an account (for showing who watches a shared session).
+	Email func(userID string) string
 }
 
 type Gateway struct {
@@ -49,6 +51,7 @@ type Gateway struct {
 	forwards map[int]*forward
 
 	tcpForwards map[string]*tcpForward
+	shares      map[string]*share
 }
 
 func New(cfg config.Config, log *slog.Logger, hooks Hooks) *Gateway {
@@ -60,7 +63,7 @@ func New(cfg config.Config, log *slog.Logger, hooks Hooks) *Gateway {
 	}
 	return &Gateway{cfg: cfg, log: log, hooks: hooks, slots: make(chan struct{}, cfg.MaxSessions),
 		perUser: map[string]int{}, handles: map[string]*sftpHandle{}, lives: map[string]*live{}, forwards: map[int]*forward{},
-		tcpForwards: map[string]*tcpForward{}}
+		tcpForwards: map[string]*tcpForward{}, shares: map[string]*share{}}
 }
 
 func (g *Gateway) claim(userID string) bool {
@@ -121,6 +124,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.fail(codeBadRequest, err.Error())
 		ws.Close(websocket.StatusPolicyViolation, "bad first message")
+		return
+	}
+	if first.T == "connect" && first.Proto == "telnet" {
+		g.startTelnet(s, first)
+		ws.Close(websocket.StatusNormalClosure, "")
 		return
 	}
 	var l *live
@@ -214,6 +222,7 @@ func (g *Gateway) resume(s *session, req *clientMsg) *live {
 	}
 	if validSize(req.Cols, req.Rows) {
 		_ = l.sess.WindowChange(req.Rows, req.Cols)
+		l.setSize(req.Cols, req.Rows)
 	}
 	g.hooks.Audit(s.userID, "ssh.resume", s.ip, map[string]any{"host": l.host, "user": l.user})
 	l.attach(s, req.Offset, true, nil)

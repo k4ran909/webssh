@@ -55,7 +55,11 @@ type live struct {
 	// same order, and a replay finishes before new output follows it.
 	writeMu sync.Mutex
 
-	endOnce           sync.Once
+	endOnce sync.Once
+
+	// Session sharing (share.go), under mu.
+	watchers          map[*watcher]struct{}
+	cols, rows        int
 	bytesIn, bytesOut atomic.Int64
 }
 
@@ -80,6 +84,8 @@ func newLive(g *Gateway, s *session, client *ssh.Client, closeAll func(), req *c
 		ring: make([]byte, 0, ringSize), resumeToken: randomToken(),
 	}
 	l.cond = sync.NewCond(&l.mu)
+	l.watchers = map[*watcher]struct{}{}
+	l.cols, l.rows = req.Cols, req.Rows
 	l.ctx, l.cancel = context.WithCancel(context.Background())
 	context.AfterFunc(l.ctx, func() {
 		l.mu.Lock()
@@ -122,6 +128,7 @@ func (l *live) serve(s *session) (websocket.StatusCode, string) {
 			var m clientMsg
 			if decodeMsg(f.data, &m) && m.T == "resize" && validSize(m.Cols, m.Rows) {
 				_ = l.sess.WindowChange(m.Rows, m.Cols)
+				l.setSize(m.Cols, m.Rows)
 			}
 		case <-l.ctx.Done():
 			return websocket.StatusNormalClosure, "session ended"
@@ -244,6 +251,9 @@ func (l *live) emit(b []byte) bool {
 			l.ring = l.ring[:ringSize]
 			l.start += int64(drop)
 		}
+		if len(l.watchers) > 0 {
+			l.push(watcherOut{bin: append([]byte(nil), b...)})
+		}
 		l.mu.Unlock()
 		err := c.ws.Write(c.ctx, websocket.MessageBinary, b)
 		l.writeMu.Unlock()
@@ -297,6 +307,11 @@ func (l *live) end() {
 		l.closeAll()
 		g := l.g
 		g.unregister(l.id)
+		l.mu.Lock()
+		for w := range l.watchers {
+			w.stop()
+		}
+		l.mu.Unlock()
 		g.mu.Lock()
 		delete(g.lives, l.resumeToken)
 		var fwds []*forward
@@ -309,6 +324,12 @@ func (l *live) end() {
 		for id, f := range g.tcpForwards {
 			if f.handle == l.id {
 				delete(g.tcpForwards, id)
+				go f.closePending()
+			}
+		}
+		for id, s := range g.shares {
+			if s.live == l {
+				delete(g.shares, id)
 			}
 		}
 		g.mu.Unlock()

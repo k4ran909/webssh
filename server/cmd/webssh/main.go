@@ -56,11 +56,12 @@ func run(log *slog.Logger) error {
 		log.Info("AI helper on", "model", ex.Model())
 	}
 	a.StartJanitor(ctx)
-	gw := gateway.New(cfg, log, gateway.Hooks{User: api.UserID, ClientIP: a.ClientIP, Audit: a.Record})
+	gw := gateway.New(cfg, log, gateway.Hooks{User: api.UserID, ClientIP: a.ClientIP, Audit: a.Record, Email: a.EmailOf})
 
 	mux := http.NewServeMux()
 	a.Routes(mux)
 	mux.Handle("GET /ws/terminal", a.RequireUser(gw))
+	mux.Handle("GET /ws/watch", a.RequireUser(http.HandlerFunc(gw.ServeWatch)))
 	mux.Handle("GET /ws/relay", a.RequireUser(http.HandlerFunc(gw.ServeRelay)))
 	gw.SFTPRoutes(mux, a.RequireUser)
 	gw.ForwardRoutes(mux, a.RequireUser)
