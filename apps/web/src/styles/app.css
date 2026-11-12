@@ -197,9 +197,10 @@ svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none;
 .win-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .win-size { color: #5a5a5a; font-size: 11px; }
 .win-actions { margin-left: auto; display: flex; gap: 1px; }
-.win-actions button { width: 28px; height: 26px; display: grid; place-items: center; border-radius: 6px; color: #7a7a7a; }
-.win-actions button:hover { background: #1c1c1c; color: #e6e6e6; }
-.win-actions button.close:hover { background: #3a1513; color: #f28b82; }
+/* Only the title bar's own buttons: the ⋯ menu inside .anchor has full-width items. */
+.win-actions > button, .win-actions > .anchor > button { width: 28px; height: 26px; display: grid; place-items: center; border-radius: 6px; color: #7a7a7a; }
+.win-actions > button:hover, .win-actions > .anchor > button:hover { background: #1c1c1c; color: #e6e6e6; }
+.win-actions > button.close:hover { background: #3a1513; color: #f28b82; }
 .win-body { flex: 1; min-height: 0; position: relative; }
 .win.dragging .win-body { pointer-events: none; }
 
@@ -514,7 +515,7 @@ em.hint { font-style: normal; color: var(--text-3); font-weight: 400; }
   position: absolute; z-index: 3; left: 50%; top: 12px; transform: translateX(-50%); display: flex; align-items: center; gap: 8px;
   padding: 6px 12px; border-radius: 999px; background: #1a1712; border: 1px solid #3a3320; color: #e6c47a; font-size: 12px; animation: fade 0.2s;
 }
-.popover.win-menu { width: 220px; top: calc(100% + 4px); }
+.popover.win-menu { width: 230px; top: calc(100% + 4px); font: 13px var(--font); cursor: default; user-select: none; }
 .win-menu .pop-item { color: var(--text); font-size: 13px; }
 .win-menu .pop-item:disabled { opacity: 0.4; cursor: default; }
 .win-menu .pop-item:disabled:hover { background: none; }
