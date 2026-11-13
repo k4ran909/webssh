@@ -51,6 +51,7 @@ func (g *Gateway) ForwardRoutes(mux *http.ServeMux, wrap func(http.Handler) http
 	mux.Handle("DELETE /api/forwards/{port}", wrap(http.HandlerFunc(g.deleteForward)))
 	g.tcpRoutes(mux, wrap)
 	g.shareRoutes(mux, wrap)
+	g.monitorRoutes(mux, wrap)
 }
 
 type forwardInfo struct {

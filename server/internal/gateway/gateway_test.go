@@ -211,6 +211,11 @@ func startGatewayWith(t *testing.T, cfg config.Config) string {
 				return u, true
 			}
 			return "u1", r.Header.Get("X-Test-Anon") == ""
+		}, CanMonitor: func(id string) (bool, string) {
+			if id == "admin" {
+				return true, ""
+			}
+			return false, "Only the gateway admin can do that."
 		}})
 	mux := http.NewServeMux()
 	mux.Handle("GET /ws", g)

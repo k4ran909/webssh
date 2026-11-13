@@ -244,3 +244,17 @@ func (a *API) EmailOf(userID string) string {
 	}
 	return u.Email
 }
+
+// CanMonitor lets the gateway admin watch and control every user's live
+// sessions, and only with two-factor sign-in on: a stolen admin password
+// alone must not open everyone's terminals.
+func (a *API) CanMonitor(userID string) (bool, string) {
+	u, err := a.db.UserByID(context.Background(), userID)
+	if err != nil || !u.IsAdmin {
+		return false, "Only the gateway admin can do that."
+	}
+	if u.TOTPSecret == nil {
+		return false, "Turn on two-factor sign-in for your account first."
+	}
+	return true, ""
+}

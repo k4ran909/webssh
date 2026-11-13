@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { WatchView, type WatchSource } from './Sharing'
 import { api, type AuditEvent } from '../lib/api'
 import { Icon } from './icons'
 
@@ -22,7 +23,7 @@ const message = (e: unknown) => (e instanceof Error ? e.message : 'Something wen
 const when = (s: string) => (s && !s.startsWith('0001') && new Date(s).getTime() > 0 ? new Date(s).toLocaleString() : 'never')
 
 export function AdminDialog({ myUserId, myTotp, onClose }: { myUserId: string; myTotp: boolean; onClose: () => void }) {
-  const [tab, setTab] = useState<'users' | 'policy' | 'audit'>('users')
+  const [tab, setTab] = useState<'users' | 'sessions' | 'policy' | 'audit'>('users')
   return (
     <div className="scrim modal-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal wide-modal" role="dialog" aria-label="Gateway admin" onKeyDown={(e) => e.key === 'Escape' && onClose()}>
@@ -34,12 +35,13 @@ export function AdminDialog({ myUserId, myTotp, onClose }: { myUserId: string; m
           <button className="icon-btn" aria-label="Close" onClick={onClose}><Icon name="x" /></button>
         </div>
         <div className="seg acct-tabs" role="tablist">
-          {(['users', 'policy', 'audit'] as const).map((t) => (
+          {(['users', 'sessions', 'policy', 'audit'] as const).map((t) => (
             <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>
           ))}
         </div>
         <div className="acct-body">
           {tab === 'users' && <Users myUserId={myUserId} />}
+          {tab === 'sessions' && <Sessions myTotp={myTotp} />}
           {tab === 'policy' && <Policy myTotp={myTotp} />}
           {tab === 'audit' && <Audit />}
         </div>
@@ -178,5 +180,63 @@ function Audit() {
         </div>
       ))}
     </div>
+  )
+}
+
+interface LiveSession {
+  handle: string
+  email: string
+  user: string
+  host: string
+  port: number
+  started: string
+  attached: boolean
+}
+
+const since = (iso: string) => {
+  const m = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000))
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`
+}
+
+/** Every live session on the gateway, to watch or take over. */
+function Sessions({ myTotp }: { myTotp: boolean }) {
+  const [sessions, setSessions] = useState<LiveSession[] | null>(null)
+  const [error, setError] = useState('')
+  const [watching, setWatching] = useState<WatchSource | null>(null)
+  const load = useCallback(async () => {
+    try {
+      setSessions((await api<{ sessions: LiveSession[] }>('GET', '/api/admin/sessions')).sessions)
+      setError('')
+    } catch (e) {
+      setError(message(e))
+    }
+  }, [])
+  useEffect(() => {
+    load()
+    const t = setInterval(load, 3000)
+    return () => clearInterval(t)
+  }, [load])
+
+  return (
+    <section className="acct-sec">
+      <h3>Live sessions{sessions ? ` · ${sessions.length}` : ''}</h3>
+      <p className="pop-sub">Every SSH session running through this gateway. Watch one, or take control and type into it. Joining is recorded in the audit log. End-to-end and Telnet sessions aren't listed: the gateway can't see inside them.</p>
+      {!myTotp && <p className="warn-note"><Icon name="alert" size={13} /> Turn on two-factor sign-in for your account (Account &amp; security) to use this.</p>}
+      {error && <p className="form-error">{error}</p>}
+      {sessions && sessions.length === 0 && !error && <p className="pop-sub">Nobody is connected right now.</p>}
+      <div className="member-list">
+        {sessions?.map((s) => (
+          <div key={s.handle} className="member-row">
+            <div className="kc-main">
+              <span className="kc-title mono">{s.user}@{s.host}{s.port !== 22 ? `:${s.port}` : ''}</span>
+              <span className="kc-sub">{s.email || 'unknown account'} · {since(s.started)}{s.attached ? '' : ' · browser disconnected'}</span>
+            </div>
+            <button className="btn sm-btn" onClick={() => setWatching({ handle: s.handle, control: false })}><Icon name="eye" size={13} /> Watch</button>
+            <button className="btn sm-btn" onClick={() => setWatching({ handle: s.handle, control: true })}>Take control</button>
+          </div>
+        ))}
+      </div>
+      {watching && <WatchView source={watching} onClose={() => setWatching(null)} />}
+    </section>
   )
 }

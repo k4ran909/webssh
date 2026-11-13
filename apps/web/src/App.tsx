@@ -599,7 +599,7 @@ export function App({ session, locked, prefs, setPrefs, onSession, onLock, onLog
         <ShareDialog session={ws.sessions.find((s) => s.id === sharing)!} onClose={() => setSharing(null)} />
       )}
       {asking && <CommandDialog sessionId={asking.id} where={asking.where} onClose={() => setAsking(null)} />}
-      {watchToken && <WatchView token={watchToken} onClose={stopWatching} />}
+      {watchToken && <WatchView source={{ token: watchToken }} onClose={stopWatching} />}
       {explaining && <ExplainDialog text={explaining.text} where={explaining.where} onClose={() => setExplaining(null)} />}
       {forwarding && ws.sessions.some((s) => s.id === forwarding) && (
         <ForwardDialog session={ws.sessions.find((s) => s.id === forwarding)!} onClose={() => setForwarding(null)} onCreated={fwd.refresh} />

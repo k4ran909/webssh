@@ -255,23 +255,50 @@ func (g *Gateway) ServeWatch(w http.ResponseWriter, r *http.Request) {
 	var first struct {
 		T     string `json:"t"`
 		Token string `json:"token"`
+		// admin-watch: the gateway admin joins any session by its handle.
+		Handle  string `json:"handle"`
+		Control bool   `json:"control"`
 	}
-	if err != nil || typ != websocket.MessageText || json.Unmarshal(data, &first) != nil || first.T != "watch" {
+	if err != nil || typ != websocket.MessageText || json.Unmarshal(data, &first) != nil || (first.T != "watch" && first.T != "admin-watch") {
 		fail(codeBadRequest, "expected a watch message")
 		return
 	}
-	sum := sha256.Sum256([]byte(first.Token))
 	var s *share
-	g.mu.Lock()
-	for _, o := range g.shares {
-		if subtle.ConstantTimeCompare(sum[:], o.tokenHash[:]) == 1 {
-			s = o
+	monitoring := first.T == "admin-watch"
+	if monitoring {
+		if ok, why := g.canMonitor(userID); !ok {
+			fail("NOT_ALLOWED", why)
+			return
 		}
-	}
-	g.mu.Unlock()
-	if s == nil {
-		fail("SHARE_GONE", "This share link has ended (the session closed, or its owner stopped sharing).")
-		return
+		g.mu.Lock()
+		for _, l := range g.lives {
+			if l.id == first.Handle {
+				mode := "view"
+				if first.Control {
+					mode = "control"
+				}
+				// A private share: never listed to the session's owner.
+				s = &share{id: "admin", userID: l.userID, mode: mode, live: l, created: time.Now()}
+			}
+		}
+		g.mu.Unlock()
+		if s == nil {
+			fail("SHARE_GONE", "That session has ended.")
+			return
+		}
+	} else {
+		sum := sha256.Sum256([]byte(first.Token))
+		g.mu.Lock()
+		for _, o := range g.shares {
+			if subtle.ConstantTimeCompare(sum[:], o.tokenHash[:]) == 1 {
+				s = o
+			}
+		}
+		g.mu.Unlock()
+		if s == nil {
+			fail("SHARE_GONE", "This share link has ended (the session closed, or its owner stopped sharing).")
+			return
+		}
 	}
 	l := s.live
 	wt := &watcher{share: s, userID: userID, since: time.Now(), out: make(chan watcherOut, watcherBuffer), done: make(chan struct{})}
@@ -288,8 +315,13 @@ func (g *Gateway) ServeWatch(w http.ResponseWriter, r *http.Request) {
 	if g.hooks.Email != nil {
 		owner = g.hooks.Email(s.userID)
 	}
-	g.hooks.Audit(userID, "share.join", g.hooks.ClientIP(r), map[string]any{"host": l.host, "mode": s.mode, "owner": owner})
-	g.hooks.Audit(s.userID, "share.joined", g.hooks.ClientIP(r), map[string]any{"host": l.host, "mode": s.mode, "watcher": wt.email})
+	if monitoring {
+		// Recorded for the admin only; the session's owner isn't told.
+		g.hooks.Audit(userID, "admin.session.watch", g.hooks.ClientIP(r), map[string]any{"host": l.host, "user": l.user, "mode": s.mode, "owner": owner})
+	} else {
+		g.hooks.Audit(userID, "share.join", g.hooks.ClientIP(r), map[string]any{"host": l.host, "mode": s.mode, "owner": owner})
+		g.hooks.Audit(s.userID, "share.joined", g.hooks.ClientIP(r), map[string]any{"host": l.host, "mode": s.mode, "watcher": wt.email})
+	}
 
 	if send(map[string]any{"t": "watching", "mode": s.mode, "owner": owner, "host": l.user + "@" + l.host, "cols": cols, "rows": rows}) != nil {
 		return

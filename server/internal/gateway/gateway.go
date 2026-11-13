@@ -36,6 +36,9 @@ type Hooks struct {
 	Audit func(userID, action, ip string, detail any)
 	// Email names an account (for showing who watches a shared session).
 	Email func(userID string) string
+	// CanMonitor says whether an account may watch and control every
+	// user's sessions (the gateway admin, with 2FA on), and if not, why.
+	CanMonitor func(userID string) (bool, string)
 }
 
 type Gateway struct {

@@ -118,8 +118,14 @@ export function ShareDialog({ session, onClose }: { session: Session; onClose: (
   )
 }
 
+/** Joining someone's session: by share link, or as the gateway admin by handle. */
+export type WatchSource = { token: string } | { handle: string; control: boolean }
+
 /** The watcher's side: a read-only (or shared-control) view of someone's session. */
-export function WatchView({ token, onClose }: { token: string; onClose: () => void }) {
+export function WatchView({ source, onClose }: { source: WatchSource; onClose: () => void }) {
+  const admin = 'handle' in source
+  // Reconnect only when the target changes, not on every parent render.
+  const key = 'handle' in source ? `admin:${source.handle}:${source.control}` : `link:${source.token}`
   const hostRef = useRef<HTMLDivElement>(null)
   const [info, setInfo] = useState<{ mode: string; owner: string; host: string } | null>(null)
   const [status, setStatus] = useState('Joining…')
@@ -138,7 +144,9 @@ export function WatchView({ token, onClose }: { token: string; onClose: () => vo
     const ws = new WebSocket(`${proto}//${location.host}/ws/watch`)
     ws.binaryType = 'arraybuffer'
     let control = false
-    ws.onopen = () => ws.send(JSON.stringify({ t: 'watch', token }))
+    ws.onopen = () => ws.send(JSON.stringify('handle' in source
+      ? { t: 'admin-watch', handle: source.handle, control: source.control }
+      : { t: 'watch', token: source.token }))
     ws.onmessage = (e) => {
       if (typeof e.data !== 'string') return term.write(new Uint8Array(e.data as ArrayBuffer))
       const m = JSON.parse(e.data)
@@ -167,15 +175,16 @@ export function WatchView({ token, onClose }: { token: string; onClose: () => vo
       ws.close()
       term.dispose()
     }
-  }, [token])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key])
 
   return (
     <div className="scrim modal-scrim watch-scrim">
       <div className="watch-view" role="dialog" aria-label="Shared session">
         <div className="watch-head">
           <Icon name="eye" size={14} />
-          <span className="watch-title">{info ? <>{info.host} <em className="hint">shared by {info.owner || 'someone'}</em></> : 'Shared session'}</span>
-          {info && <span className={`tag${info.mode === 'control' ? ' warn' : ''}`}>{info.mode === 'control' ? 'you can type' : 'watch only'}</span>}
+          <span className="watch-title">{info ? <>{info.host} <em className="hint">{admin ? 'session of' : 'shared by'} {info.owner || 'someone'}</em></> : admin ? 'Session' : 'Shared session'}</span>
+          {info && <span className={`tag${info.mode === 'control' ? ' warn' : ''}`}>{info.mode === 'control' ? (admin ? 'in control' : 'you can type') : 'watch only'}</span>}
           <button className="icon-btn" aria-label="Leave" title="Leave" onClick={onClose}><Icon name="x" /></button>
         </div>
         {status && <p className="watch-status">{status}</p>}
