@@ -25,6 +25,7 @@ func (a *API) adminRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/settings", h(a.adminSettings))
 	mux.Handle("PUT /api/admin/settings", h(a.adminSetSettings))
 	mux.Handle("GET /api/admin/audit", h(a.adminAudit))
+	a.recordingRoutes(mux)
 }
 
 func (a *API) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
@@ -137,16 +138,29 @@ func (a *API) adminRevokeInvite(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) adminSettings(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"require2fa": a.require2FA(r.Context()), "openSignup": a.cfg.OpenSignup})
+	writeJSON(w, http.StatusOK, map[string]any{"require2fa": a.require2FA(r.Context()), "openSignup": a.cfg.OpenSignup,
+		"recordSessions": a.recordingEnabled(r.Context()), "recordingDays": a.cfg.RecordingDays})
 }
 
 func (a *API) adminSetSettings(w http.ResponseWriter, r *http.Request) {
 	p := current(r.Context())
 	var req struct {
-		Require2FA *bool `json:"require2fa"`
+		Require2FA     *bool `json:"require2fa"`
+		RecordSessions *bool `json:"recordSessions"`
 	}
 	if !decode(w, r, &req) {
 		return
+	}
+	if req.RecordSessions != nil {
+		v := "0"
+		if *req.RecordSessions {
+			v = "1"
+		}
+		if err := a.db.SetSetting(r.Context(), settingRecord, v); err != nil {
+			a.fail(w, err)
+			return
+		}
+		a.Record(p.user.ID, "admin.policy", a.ClientIP(r), map[string]bool{"recordSessions": *req.RecordSessions})
 	}
 	if req.Require2FA != nil {
 		if *req.Require2FA && p.user.TOTPSecret == nil {

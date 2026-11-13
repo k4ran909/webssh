@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState, type FormEvent } from 'react'
+import { parseCast, type Cast } from '../lib/cast'
 import { WatchView, type WatchSource } from './Sharing'
 import { api, type AuditEvent } from '../lib/api'
 import { Icon } from './icons'
@@ -23,7 +24,7 @@ const message = (e: unknown) => (e instanceof Error ? e.message : 'Something wen
 const when = (s: string) => (s && !s.startsWith('0001') && new Date(s).getTime() > 0 ? new Date(s).toLocaleString() : 'never')
 
 export function AdminDialog({ myUserId, myTotp, onClose }: { myUserId: string; myTotp: boolean; onClose: () => void }) {
-  const [tab, setTab] = useState<'users' | 'sessions' | 'policy' | 'audit'>('users')
+  const [tab, setTab] = useState<'users' | 'sessions' | 'recordings' | 'policy' | 'audit'>('users')
   return (
     <div className="scrim modal-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal wide-modal" role="dialog" aria-label="Gateway admin" onKeyDown={(e) => e.key === 'Escape' && onClose()}>
@@ -35,13 +36,14 @@ export function AdminDialog({ myUserId, myTotp, onClose }: { myUserId: string; m
           <button className="icon-btn" aria-label="Close" onClick={onClose}><Icon name="x" /></button>
         </div>
         <div className="seg acct-tabs" role="tablist">
-          {(['users', 'sessions', 'policy', 'audit'] as const).map((t) => (
+          {(['users', 'sessions', 'recordings', 'policy', 'audit'] as const).map((t) => (
             <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>
           ))}
         </div>
         <div className="acct-body">
           {tab === 'users' && <Users myUserId={myUserId} />}
           {tab === 'sessions' && <Sessions myTotp={myTotp} />}
+          {tab === 'recordings' && <Recordings />}
           {tab === 'policy' && <Policy myTotp={myTotp} />}
           {tab === 'audit' && <Audit />}
         </div>
@@ -138,10 +140,17 @@ function Users({ myUserId }: { myUserId: string }) {
   )
 }
 
+interface PolicySettings {
+  require2fa: boolean
+  openSignup: boolean
+  recordSessions: boolean
+  recordingDays: number
+}
+
 function Policy({ myTotp }: { myTotp: boolean }) {
-  const [s, setS] = useState<{ require2fa: boolean; openSignup: boolean } | null>(null)
+  const [s, setS] = useState<PolicySettings | null>(null)
   const [error, setError] = useState('')
-  useEffect(() => { api<{ require2fa: boolean; openSignup: boolean }>('GET', '/api/admin/settings').then(setS, (e) => setError(message(e))) }, [])
+  useEffect(() => { api<PolicySettings>('GET', '/api/admin/settings').then(setS, (e) => setError(message(e))) }, [])
   if (!s) return <p className="pop-sub">{error || 'Loading…'}</p>
   return (
     <section className="acct-sec">
@@ -155,6 +164,15 @@ function Policy({ myTotp }: { myTotp: boolean }) {
       </label>
       <p className="pop-sub">Accounts without 2FA can still sign in, but can only set it up: no vault, no SSH until they do.{!myTotp && ' Turn on 2FA for your own account first.'}</p>
       <p className="pop-sub" style={{ marginTop: 12 }}>Open sign-up: <b>{s.openSignup ? 'on' : 'off'}</b> (set with WEBSSH_OPEN_SIGNUP).</p>
+      <h3 style={{ marginTop: 18 }}>Recording</h3>
+      <label className="check">
+        <input type="checkbox" checked={s.recordSessions} onChange={async (e) => {
+          setError('')
+          try { setS(await api('PUT', '/api/admin/settings', { recordSessions: e.target.checked })) } catch (err) { setError(message(err)) }
+        }} />
+        <span>Record every session's output on the gateway</span>
+      </label>
+      <p className="pop-sub">Saved on the gateway's disk for {s.recordingDays > 0 ? `${s.recordingDays} days` : 'ever'} (WEBSSH_RECORDING_DAYS), viewable under Recordings. Keystrokes aren't recorded; end-to-end sessions can't be.</p>
       {error && <p className="form-error">{error}</p>}
     </section>
   )
@@ -237,6 +255,119 @@ function Sessions({ myTotp }: { myTotp: boolean }) {
         ))}
       </div>
       {watching && <WatchView source={watching} onClose={() => setWatching(null)} />}
+    </section>
+  )
+}
+
+const CastPlayer = lazy(() => import('./CastPlayer'))
+
+interface RecordingRow {
+  id: string
+  userId: string
+  email: string
+  host: string
+  login: string
+  port: number
+  proto: string
+  started: string
+  ended: string
+  bytes: number
+}
+
+const live = (r: RecordingRow) => !r.ended || r.ended.startsWith('0001')
+const duration = (r: RecordingRow) => {
+  const s = Math.max(0, Math.round(((live(r) ? Date.now() : new Date(r.ended).getTime()) - new Date(r.started).getTime()) / 1000))
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+}
+const size = (n: number) => (n < 1024 ? `${n} B` : n < 1 << 20 ? `${(n / 1024).toFixed(1)} KB` : `${(n / (1 << 20)).toFixed(1)} MB`)
+
+/** Server-side recordings of every session, to replay or delete. */
+function Recordings() {
+  const [rows, setRows] = useState<RecordingRow[] | null>(null)
+  const [meta, setMeta] = useState<{ enabled: boolean; days: number } | null>(null)
+  const [users, setUsers] = useState<{ id: string; email: string }[]>([])
+  const [who, setWho] = useState('')
+  const [error, setError] = useState('')
+  const [confirm, setConfirm] = useState<string | null>(null)
+  const [playing, setPlaying] = useState<{ cast: Cast; name: string } | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const r = await api<{ recordings: RecordingRow[]; enabled: boolean; days: number }>('GET', `/api/admin/recordings${who ? `?user=${encodeURIComponent(who)}` : ''}`)
+      setRows(r.recordings)
+      setMeta({ enabled: r.enabled, days: r.days })
+      setError('')
+    } catch (e) {
+      setError(message(e))
+    }
+  }, [who])
+  useEffect(() => { load() }, [load])
+  useEffect(() => { api<{ users: { id: string; email: string }[] }>('GET', '/api/admin/users').then((r) => setUsers(r.users), () => {}) }, [])
+
+  const play = async (r: RecordingRow) => {
+    setError('')
+    try {
+      const res = await fetch(`/api/admin/recordings/${r.id}/cast`, { credentials: 'same-origin' })
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).msg ?? res.statusText)
+      const name = `${r.email || 'session'} ${r.login ? r.login + '@' : ''}${r.host} ${new Date(r.started).toLocaleString()}`
+      setPlaying({ cast: parseCast(await res.text()), name })
+    } catch (e) {
+      setError(message(e))
+    }
+  }
+
+  const remove = async (id: string) => {
+    setError('')
+    try {
+      await api('DELETE', `/api/admin/recordings/${id}`)
+      setConfirm(null)
+      load()
+    } catch (e) {
+      setError(message(e))
+    }
+  }
+
+  return (
+    <section className="acct-sec">
+      <div className="audit-head">
+        <h3>Recordings{rows ? ` · ${rows.length}` : ''}</h3>
+        <select className="input select" value={who} aria-label="Filter by account" onChange={(e) => setWho(e.target.value)}>
+          <option value="">Everyone</option>
+          {users.map((u) => <option key={u.id} value={u.id}>{u.email}</option>)}
+        </select>
+      </div>
+      <p className="pop-sub">
+        {meta && !meta.enabled ? 'Recording is off (Policy tab). ' : ''}
+        Output of every session, kept {meta?.days ? `${meta.days} days` : 'until deleted'}. Each playback is recorded in the audit log.
+      </p>
+      {error && <p className="form-error">{error}</p>}
+      {rows && rows.length === 0 && !error && <p className="pop-sub">No recordings yet.</p>}
+      <div className="member-list">
+        {rows?.map((r) => (
+          <div key={r.id} className="member-row">
+            <div className="kc-main">
+              <span className="kc-title mono">{r.login ? `${r.login}@` : ''}{r.host}{r.port !== 22 && r.port ? `:${r.port}` : ''}{r.proto === 'telnet' && <span className="tag">telnet</span>}</span>
+              <span className="kc-sub">{r.email || 'deleted account'} · {new Date(r.started).toLocaleString()} · {duration(r)} · {size(r.bytes)}{live(r) ? ' · running' : ''}</span>
+            </div>
+            {confirm === r.id ? (
+              <>
+                <button className="btn danger sm-btn" onClick={() => remove(r.id)}>Delete</button>
+                <button className="btn sm-btn" onClick={() => setConfirm(null)}>Keep</button>
+              </>
+            ) : (
+              <>
+                <button className="btn sm-btn" onClick={() => play(r)}><Icon name="play" size={13} /> Play</button>
+                {!live(r) && <button className="icon-btn sm" title="Delete recording" aria-label="Delete recording" onClick={() => setConfirm(r.id)}><Icon name="trash" size={13} /></button>}
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+      {playing && (
+        <Suspense fallback={null}>
+          <CastPlayer cast={playing.cast} name={playing.name} onClose={() => setPlaying(null)} />
+        </Suspense>
+      )}
     </section>
   )
 }

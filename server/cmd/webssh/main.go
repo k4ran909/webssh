@@ -56,7 +56,8 @@ func run(log *slog.Logger) error {
 		log.Info("AI helper on", "model", ex.Model())
 	}
 	a.StartJanitor(ctx)
-	gw := gateway.New(cfg, log, gateway.Hooks{User: api.UserID, ClientIP: a.ClientIP, Audit: a.Record, Email: a.EmailOf, CanMonitor: a.CanMonitor})
+	gw := gateway.New(cfg, log, gateway.Hooks{User: api.UserID, ClientIP: a.ClientIP, Audit: a.Record, Email: a.EmailOf, CanMonitor: a.CanMonitor,
+		Record: a.StartRecording})
 
 	mux := http.NewServeMux()
 	a.Routes(mux)

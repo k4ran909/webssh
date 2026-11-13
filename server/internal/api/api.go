@@ -227,6 +227,7 @@ func (a *API) StartJanitor(ctx context.Context) {
 		defer t.Stop()
 		for {
 			_ = a.db.PruneSessions(ctx, a.now())
+			a.pruneRecordings(ctx)
 			select {
 			case <-ctx.Done():
 				return

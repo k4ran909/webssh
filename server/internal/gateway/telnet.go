@@ -213,6 +213,8 @@ func (g *Gateway) startTelnet(s *session, req *clientMsg) {
 	var in, out atomic.Int64
 
 	t := &telnet{conn: conn, term: req.Term, cols: req.Cols, rows: req.Rows, answered: map[[2]byte]bool{}}
+	rec := g.record(s.userID, req.Host, "", "telnet", req.Port, req.Cols, req.Rows)
+	defer rec.Close()
 	if s.send(serverMsg{T: "ready", Algo: "telnet"}) != nil {
 		return
 	}
@@ -221,6 +223,7 @@ func (g *Gateway) startTelnet(s *session, req *clientMsg) {
 		defer close(done)
 		_ = t.pump(func(b []byte) error {
 			out.Add(int64(len(b)))
+			rec.Output(b)
 			return s.ws.Write(s.ctx, websocket.MessageBinary, b)
 		})
 	}()
@@ -253,6 +256,7 @@ func (g *Gateway) startTelnet(s *session, req *clientMsg) {
 				t.cols, t.rows = m.Cols, m.Rows
 				t.mu.Unlock()
 				t.sendSize()
+				rec.Resize(m.Cols, m.Rows)
 			}
 		case <-done:
 			code := -1

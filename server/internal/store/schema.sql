@@ -102,3 +102,19 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- Server-side session recordings (output only); the asciicast files live in
+-- <data>/recordings/<id>.cast.gz.
+CREATE TABLE IF NOT EXISTS recordings (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL,
+  host       TEXT NOT NULL,
+  login      TEXT NOT NULL,
+  port       INTEGER NOT NULL,
+  proto      TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  ended_at   INTEGER NOT NULL DEFAULT 0,
+  bytes      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS recordings_user ON recordings (user_id, started_at);
+CREATE INDEX IF NOT EXISTS recordings_started ON recordings (started_at);

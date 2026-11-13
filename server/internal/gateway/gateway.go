@@ -17,6 +17,7 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/k4ran909/webssh/internal/config"
+	"github.com/k4ran909/webssh/internal/recording"
 	"github.com/k4ran909/webssh/internal/sshcore"
 )
 
@@ -39,6 +40,9 @@ type Hooks struct {
 	// CanMonitor says whether an account may watch and control every
 	// user's sessions (the gateway admin, with 2FA on), and if not, why.
 	CanMonitor func(userID string) (bool, string)
+	// Record starts a server-side recording of a session's output, or
+	// returns nil when recording is off.
+	Record func(s RecordedSession) *recording.Writer
 }
 
 type Gateway struct {
@@ -380,4 +384,17 @@ func (s *session) askTrust(h *hop, fp, algo string) error {
 			return s.ctx.Err()
 		}
 	}
+}
+
+// RecordedSession describes a session being recorded.
+type RecordedSession struct {
+	UserID, Host, Login, Proto string
+	Port, Cols, Rows           int
+}
+
+func (g *Gateway) record(userID, host, login, proto string, port, cols, rows int) *recording.Writer {
+	if g.hooks.Record == nil {
+		return nil
+	}
+	return g.hooks.Record(RecordedSession{UserID: userID, Host: host, Login: login, Proto: proto, Port: port, Cols: cols, Rows: rows})
 }

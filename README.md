@@ -56,7 +56,7 @@
 - **Shared vaults** with roles (owner, admin, member, viewer). Share a host and its key, jump hosts, snippet and trusted host key come along.
 - **Members are confirmed by key fingerprint**, so a compromised server can't slip in its own key. Removing a member **rotates the team key** automatically.
 - **Live session sharing**: send a link so a teammate can watch your terminal, or work in it with you.
-- **Gateway admin**: invitations, a require-2FA policy, a CSV-exportable audit log for every account, and **live session monitoring**: see every session on the gateway, watch any of them, or take control and type into it (requires 2FA on the admin account; every join is audited).
+- **Gateway admin**: invitations, a require-2FA policy, a CSV-exportable audit log for every account, **live session monitoring** (see every session on the gateway, watch any of them, or take control and type into it), and **session recordings** of every session's output to replay later. Both require 2FA on the admin account, and every watch and playback is audited.
 
 ### Optional AI helper
 Off by default. When the admin enables it, you can **explain selected terminal output** or **describe a command in words** and get one back to review. Only the text you choose is sent to Claude (Anthropic), and suggested commands are typed in for you to check, never run.
@@ -100,7 +100,7 @@ npm run build
 ./bin/webssh
 ```
 
-Open <http://127.0.0.1:7022> and create your account. `npm run build` produces `bin/webssh` (the gateway, with the web app embedded) and `bin/webssh-cli` (the companion CLI). Data is stored in `./data` (an SQLite database and `server.key`); back up both.
+Open <http://127.0.0.1:7022> and create your account. `npm run build` produces `bin/webssh` (the gateway, with the web app embedded) and `bin/webssh-cli` (the companion CLI). Data is stored in `./data` (an SQLite database, `server.key`, and session recordings); back up the database and key.
 
 ---
 
@@ -147,6 +147,7 @@ All settings are environment variables.
 | `WEBSSH_ALLOWED_ORIGINS` | none | Extra origins (`host:port`, comma-separated) allowed to call the API. |
 | `WEBSSH_AI` | `false` | Turn on the AI helper. Also needs `ANTHROPIC_API_KEY`. |
 | `WEBSSH_AI_MODEL` | `claude-opus-5-5` | Model the AI helper uses. |
+| `WEBSSH_RECORDING_DAYS` | `30` | How long session recordings are kept. `0` keeps them until deleted. Recording itself is switched on or off in Gateway admin → Policy (on by default). |
 
 ---
 
@@ -193,7 +194,7 @@ vault items ── AES-256-GCM(vault key, aad = item id) ──▶ server (opaqu
 ```
 
 - **The server never sees** your master password, vault key, saved hosts, credentials, snippets or command history. A copy of the database alone decrypts nothing.
-- **In a gateway session, the gateway sees** credentials and terminal traffic while the session is open, because it is the SSH client. That's why you run it yourself. The gateway admin can also watch and type into any gateway session from the admin panel, without the user being notified. Use an **end-to-end session** when you don't want even your own gateway, or its admin, to see a connection.
+- **In a gateway session, the gateway sees** credentials and terminal traffic while the session is open, because it is the SSH client. That's why you run it yourself. The gateway admin can also watch and type into any gateway session from the admin panel, and by default every gateway session's output is recorded for the admin to replay, without the user being notified. Use an **end-to-end session** when you don't want even your own gateway, or its admin, to see a connection.
 - **Teams** use a P-256 key pair per account and a random key per team, wrapped for each member. Members are confirmed by comparing fingerprints out of band, and removing a member re-encrypts the team vault under a new key. Change any passwords the removed person could already read.
 
 <details>
@@ -202,6 +203,7 @@ vault items ── AES-256-GCM(vault key, aad = item id) ──▶ server (opaqu
 - **Sign-in:** `HttpOnly`, `SameSite=Strict` session cookies (`Secure` behind TLS); cross-origin state changes are refused; login, recovery and 2FA are rate-limited per IP and per account; unknown emails get a decoy salt, so accounts can't be enumerated.
 - **Admins can't read vaults.** The gateway admin manages accounts and policy, with no way into any vault they aren't a member of.
 - **Session monitoring:** the admin can list, watch and control every gateway session. It needs two-factor sign-in on the admin account, so a stolen admin password alone isn't enough, and every join is written to the admin audit log (`admin.session.watch`). Users aren't notified. End-to-end and Telnet sessions can't be monitored.
+- **Session recordings** contain everything a session printed (not keystrokes, so passwords typed at a prompt aren't captured unless the server echoes them). They are stored gzipped and unencrypted in `<data>/recordings`, readable only by the gateway's user, and deleted after `WEBSSH_RECORDING_DAYS`. Playing or deleting one needs admin with 2FA and is audited. End-to-end sessions can't be recorded; Telnet sessions are.
 - **Host keys** are trusted on first use and synced in the vault; a mismatch is a hard block.
 - **Resume** requires a per-session token usable only by the same account. While detached, the gateway stops reading from the server instead of buffering without limit.
 - **End-to-end sessions:** the gateway records destination, duration and byte counts only. The WebAssembly client is served by your own gateway, so you still trust its code; what you gain is that a compromised gateway *at runtime* sees nothing.

@@ -41,6 +41,8 @@ type Config struct {
 	// overrides the model it uses.
 	AI      bool
 	AIModel string
+	// RecordingDays is how long server-side session recordings are kept; 0 keeps them.
+	RecordingDays int
 }
 
 // parsePorts reads "7100-7109,7200" style lists.
@@ -74,6 +76,7 @@ func FromEnv() (Config, error) {
 		DataDir:         getenv("WEBSSH_DATA_DIR", "data"),
 		MaxSessions:     50,
 		MaxUserSessions: 20,
+		RecordingDays:   30,
 		SessionTTL:      14 * 24 * time.Hour,
 		DialTimeout:     10 * time.Second,
 	}
@@ -93,6 +96,13 @@ func FromEnv() (Config, error) {
 		return c, err
 	}
 	c.AIModel = os.Getenv("WEBSSH_AI_MODEL")
+	if v := os.Getenv("WEBSSH_RECORDING_DAYS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return c, fmt.Errorf("WEBSSH_RECORDING_DAYS: want a number of days, got %q", v)
+		}
+		c.RecordingDays = n
+	}
 	for k, dst := range map[string]*int{"WEBSSH_MAX_SESSIONS": &c.MaxSessions, "WEBSSH_MAX_USER_SESSIONS": &c.MaxUserSessions} {
 		if v := os.Getenv(k); v != "" {
 			n, err := strconv.Atoi(v)

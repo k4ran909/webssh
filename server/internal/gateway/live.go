@@ -14,6 +14,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 
+	"github.com/k4ran909/webssh/internal/recording"
 	"github.com/k4ran909/webssh/internal/sshcore"
 )
 
@@ -57,6 +58,8 @@ type live struct {
 
 	endOnce sync.Once
 
+	rec *recording.Writer // server-side recording, or nil
+
 	// Session sharing (share.go), under mu.
 	watchers          map[*watcher]struct{}
 	cols, rows        int
@@ -86,6 +89,7 @@ func newLive(g *Gateway, s *session, client *ssh.Client, closeAll func(), req *c
 	l.cond = sync.NewCond(&l.mu)
 	l.watchers = map[*watcher]struct{}{}
 	l.cols, l.rows = req.Cols, req.Rows
+	l.rec = g.record(s.userID, req.Host, req.User, "ssh", req.Port, req.Cols, req.Rows)
 	l.ctx, l.cancel = context.WithCancel(context.Background())
 	context.AfterFunc(l.ctx, func() {
 		l.mu.Lock()
@@ -254,6 +258,7 @@ func (l *live) emit(b []byte) bool {
 		if len(l.watchers) > 0 {
 			l.push(watcherOut{bin: append([]byte(nil), b...)})
 		}
+		l.rec.Output(b)
 		l.mu.Unlock()
 		err := c.ws.Write(c.ctx, websocket.MessageBinary, b)
 		l.writeMu.Unlock()
@@ -307,6 +312,7 @@ func (l *live) end() {
 		l.closeAll()
 		g := l.g
 		g.unregister(l.id)
+		go l.rec.Close()
 		l.mu.Lock()
 		for w := range l.watchers {
 			w.stop()

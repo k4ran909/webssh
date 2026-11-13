@@ -70,6 +70,7 @@ func (l *live) push(o watcherOut) {
 }
 
 func (l *live) setSize(cols, rows int) {
+	l.rec.Resize(cols, rows)
 	l.mu.Lock()
 	l.cols, l.rows = cols, rows
 	b, _ := json.Marshal(map[string]any{"t": "size", "cols": cols, "rows": rows})
